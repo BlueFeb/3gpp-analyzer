@@ -114,7 +114,6 @@ def read_excel_from_bytes(uploaded_file):
         if getattr(cell, "hyperlink", None) and cell.hyperlink.target:
             link = cell.hyperlink.target
         else:
-            # 링크가 없을 경우 RAN1을 기본값으로 추정 (사용자 주의 필요)
             link = f"https://www.3gpp.org/ftp/tsg_ran/WG1_RL1/TSGR1_122/Docs/{docid}.zip"
         entries.append({"doc": docid, "company": company, "link": link})
     return entries
@@ -555,14 +554,13 @@ if page == "🚀 통합 AI 분석기":
             
             st.markdown("4. 화면 하단 채팅창에 아래의 **구조화된 전문가용 프롬프트**를 복사하여 붙여넣고 전송(Enter)하면 완벽한 포맷의 요약이 도출됩니다!")
             
-            # --- 개선된 전문가용 프롬프트 ---
             prompt_text = """당신은 3GPP 표준화 회의의 전문 기술 분석가입니다. 제공된 모든 기고문(문서)의 결론 및 제안(Proposal) 섹션을 꼼꼼히 검토하고, 아래의 [분석 지침]과 [출력 양식]을 엄격하게 준수하여 분석 보고서를 작성해 주세요.
 
 [분석 지침]
 1. 필터링: 반드시 "2개 이상의 회사"가 공통으로 지지하거나 유사한 기술적 주장을 하는 제안(Proposal)만 추출하세요. (1개 회사만 단독으로 주장한 내용은 완전히 제외합니다.)
 2. 그룹화: 단어 형태가 달라도 '기술적 핵심 의미와 목적'이 동일하다면 하나의 그룹으로 묶어주세요.
 3. 정렬: 지지하는 회사 수가 가장 많은 제안 그룹부터 '내림차순'으로 정렬하세요.
-4. 제약사항: 오직 제공된 소스 문서에 명시된 내용과 회사명만 사용하고, 절대 외부 지식을 섞거나 지어내지 마세요.
+4. 제약사항: 오직 제공된 소스 문서에 명시된 내용, 회사명, 문서번호만 사용하고, 절대 외부 지식을 섞거나 지어내지 마세요.
 
 [출력 양식] (반드시 아래의 마크다운 양식을 똑같이 복제하여 출력할 것)
 ### [순위]. [제안의 핵심 요약 제목]
@@ -597,14 +595,12 @@ if page == "🚀 통합 AI 분석기":
                 4. 방금 1단계에서 카드를 등록했던 **프로젝트 이름(`3GPP-Analyzer`)을 목록에서 찾아 클릭**합니다.
                 5. 그 아래 활성화된 **'Create API key in existing project'** 버튼을 클릭합니다.
                 6. 생성된 `AIzaSy...` 로 시작하는 키를 복사하여 아래에 입력하세요!
-                
-                **💡 꿀팁 (요금 폭탄 방지):** GCP 메뉴의 '결제' ➔ '예산 및 알림(Budgets & alerts)'에서 월 예산을 10,000원 등으로 설정해두면 마음 편히 사용할 수 있습니다.
                 """)
             
             api_tier_choice = st.radio(
                 "API 요금제(Tier) 선택:",
-                ("🟢 무료 티어 (초고속 Flash 모델 적용 + 스마트 속도 조절 5초)", 
-                 "🔵 유료 티어 (초정밀 Pro 모델 적용 + 문서 전체 원문 일괄 분석)"),
+                ("🟢 무료 티어 (데이터 유실 방지 Map-Reduce 적용 + 스마트 속도 조절)", 
+                 "🔵 유료 티어 (문서 전체 원문 일괄 초정밀 분석)"),
                 help="무료 API 사용자는 에러 없는 안정적인 분석을 위해 첫 번째를 선택해 주세요."
             )
             
@@ -638,9 +634,9 @@ if page == "🚀 통합 AI 분석기":
                         model_display_name = target_model_name.split('/')[-1]
                         model = genai.GenerativeModel(target_model_name)
                         
-                        # ==========================================
-                        # 분할 및 단계별 병합 (Map-Reduce) 로직 실행 (무료 티어 전용)
-                        # ==========================================
+                        # 환각을 최소화하기 위한 보수적인 모델 설정 (Temperature = 0.1)
+                        strict_config = {"temperature": 0.1}
+                        
                         if is_free_tier:
                             batch_size = 20
                             total_docs = len(st.session_state.extracted_data)
@@ -661,9 +657,21 @@ if page == "🚀 통합 AI 분석기":
                                     batch_text_buffer.append(f"[문서: {item['doc']}, 회사: {item['company']}]\n{item['content']}")
                                 batch_text = "\n\n".join(batch_text_buffer)
                                 
+                                # Map 프롬프트: 1차 추출에서는 누락을 막기 위해 필터링(2개 이상 규칙)을 적용하지 않고 100% 추출 지시
                                 prompt_map = f"""
-                                다음은 3GPP 회의에 제출된 여러 회사들의 기고문 결론입니다. 
-                                각 회사들이 지지하는 주요 제안(Proposal)들을 빠짐없이 요약해주세요.
+                                당신은 3GPP 표준화 회의의 전문 기술 분석가입니다.
+                                제공된 원문 데이터는 여러 기고문의 결론(Conclusion) 부분입니다.
+                                이 단계에서는 최종 분석을 위한 '중간 데이터'를 추출합니다. 빠지는 내용 없이 모든 제안을 추출하세요.
+
+                                [지침]
+                                1. 각 회사들이 주장하는 모든 제안(Proposal)과 결론을 추출하세요. (1개 회사가 단독으로 주장한 것도 이 단계에서는 모두 포함합니다.)
+                                2. 의미가 완전히 동일한 제안이 같은 배치 내에 있다면 하나로 묶고 회사명과 문서번호를 병기하세요.
+                                3. 절대 외부 지식을 지어내지 마세요. 환각(Hallucination)을 엄격히 금지합니다.
+
+                                [출력 양식]
+                                - 제안 요약: [제안 내용]
+                                - 지지 회사: [회사명들]
+                                - 관련 문서: [문서 번호들]
 
                                 [원문 데이터]
                                 {batch_text}
@@ -672,7 +680,7 @@ if page == "🚀 통합 AI 분석기":
                                 max_retries = 3
                                 for attempt in range(max_retries):
                                     try:
-                                        res = model.generate_content(prompt_map)
+                                        res = model.generate_content(prompt_map, generation_config=strict_config)
                                         if res and res.text:
                                             intermediate_summaries.append(res.text)
                                         break
@@ -693,31 +701,33 @@ if page == "🚀 통합 AI 분석기":
                                     status_text.text(f"⏳ 속도 위반 방지를 위해 5초 대기 중... ({i+1}/{total_batches} 완료)")
                                     time.sleep(5)
                                     
-                            status_text.text("🧠 모든 그룹 분석 완료! 최종 결과물로 병합하는 중입니다...")
+                            status_text.text("🧠 모든 그룹 분석 완료! 최종 전문가 보고서로 병합하는 중입니다...")
                             final_input = "\n\n=== 그룹별 1차 요약본 모음 ===\n\n".join(intermediate_summaries)
                             
+                            # Reduce 프롬프트: 전문가용 구조화 프롬프트 100% 적용
                             prompt_reduce = f"""
-                            당신은 3GPP 표준화 회의의 전문 기술 분석가입니다.
-                            아래 텍스트는 3GPP 표준회의에 제출된 기고문들을 바탕으로 추출된 1차 요약본 모음입니다.
-                            이 내용들을 종합하여 동일하거나 유사한 제안(Proposal)들을 완벽하게 하나로 묶어주세요.
-                            가장 많은 회사들이 지지하는 제안부터 순서대로 나열하고, 아래 양식을 엄격히 지켜서 한국어로 작성해주세요.
-                            없는 내용을 절대 지어내지(Hallucination) 마세요.
+                            당신은 3GPP 표준화 회의의 전문 기술 분석가입니다. 
+                            아래 텍스트는 제공된 모든 기고문의 1차 요약본 모음입니다. 이를 꼼꼼히 검토하고, 아래의 [분석 지침]과 [출력 양식]을 엄격하게 준수하여 최종 분석 보고서를 작성해 주세요.
 
-                            [출력 양식]
-                            ### X. [제안의 핵심 요약 제목]
-                            * 지지 회사 (총 N개사): [회사명 나열, 중복 제거]
-                            * 제안 내용: [해당 제안의 상세 내용 및 배경을 2~3문장으로 자연스럽고 명확하게 요약]
+                            [분석 지침]
+                            1. 필터링: 반드시 "2개 이상의 회사"가 공통으로 지지하거나 유사한 기술적 주장을 하는 제안(Proposal)만 추출하세요. (1개 회사만 단독으로 주장한 내용은 완전히 제외합니다.)
+                            2. 그룹화: 단어 형태가 달라도 '기술적 핵심 의미와 목적'이 동일하다면 하나의 그룹으로 묶어주세요.
+                            3. 정렬: 지지하는 회사 수가 가장 많은 제안 그룹부터 '내림차순'으로 정렬하세요.
+                            4. 제약사항: 오직 제공된 소스 문서에 명시된 내용, 회사명, 문서 번호만 사용하고, 절대 외부 지식을 섞거나 지어내지 마세요. 환각(Hallucination)을 엄격히 금지합니다.
+
+                            [출력 양식] (반드시 아래의 마크다운 양식을 똑같이 복제하여 출력할 것)
+                            ### [순위]. [제안의 핵심 요약 제목]
+                            * 지지 회사 (총 N개사): [회사명1, 회사명2, ...] (중복 제거 후 쉼표로 나열)
+                            * 상세 제안 내용: [해당 제안의 기술적 배경과 핵심 요구사항을 2~3문장으로 명확하고 이해하기 쉽게 요약]
+                            * 관련 문서 번호: [해당 제안이 포함된 원문 기고문 번호들 (예: R1-2600126 등)]
 
                             [1차 요약본 모음]
                             {final_input}
                             """
                             
-                            response = model.generate_content(prompt_reduce)
+                            response = model.generate_content(prompt_reduce, generation_config=strict_config)
                             status_text.text("✅ AI 초고속 병합 및 정밀 요약 완료!")
                         
-                        # ==========================================
-                        # 유료 티어 로직 (기존과 동일하게 대규모 일괄 처리)
-                        # ==========================================
                         else:
                             st.info(f"💎 유료 티어 모드 가동: 용량 제한 없이 가장 똑똑한 `{model_display_name}` 모델로 문서 전체 원문을 초정밀 분석합니다.")
                             with st.spinner("AI가 방대한 문서 전체를 정독하고 분석 중입니다..."):
@@ -726,24 +736,27 @@ if page == "🚀 통합 AI 분석기":
                                     extracted_text_buffer.append(f"[문서: {item['doc']}, 회사: {item['company']}]\n{item['full_content']}")
                                 full_text = "\n\n".join(extracted_text_buffer)
                                 
-                                prompt = f"""
-                                당신은 3GPP 표준화 회의의 전문 기술 분석가입니다.
-                                아래 텍스트는 3GPP 표준회의에 제출된 여러 회사들의 방대한 기고문 전체 원문 모음입니다.
-                                이 모든 회사들의 기고문들을 깊이 있게 검토하고, 동일 또는 유사한 제안(Proposal)들을 묶어주세요.
-                                가장 많은 회사들이 지지하는 제안부터 순서대로 나열하고, 각 제안마다 아래 양식을 엄격히 지켜서 한국어로 작성해주세요.
-                                없는 내용을 절대 지어내지(Hallucination) 마세요.
+                                prompt_paid = f"""
+                                당신은 3GPP 표준화 회의의 전문 기술 분석가입니다. 
+                                제공된 모든 기고문 전체 원문 모음을 꼼꼼히 검토하고, 아래의 [분석 지침]과 [출력 양식]을 엄격하게 준수하여 분석 보고서를 작성해 주세요.
 
-                                [출력 양식]
-                                ### X. [제안의 핵심 요약 제목]
-                                * 지지 회사 (총 N개사): [회사명 나열, 중복 제거]
-                                * 제안 내용: [해당 제안의 상세 내용 및 배경을 2~3문장으로 자연스럽고 명확하게 요약]
+                                [분석 지침]
+                                1. 필터링: 반드시 "2개 이상의 회사"가 공통으로 지지하거나 유사한 기술적 주장을 하는 제안(Proposal)만 추출하세요. (1개 회사만 단독으로 주장한 내용은 완전히 제외합니다.)
+                                2. 그룹화: 단어 형태가 달라도 '기술적 핵심 의미와 목적'이 동일하다면 하나의 그룹으로 묶어주세요.
+                                3. 정렬: 지지하는 회사 수가 가장 많은 제안 그룹부터 '내림차순'으로 정렬하세요.
+                                4. 제약사항: 오직 제공된 소스 문서에 명시된 내용, 회사명, 문서 번호만 사용하고, 절대 외부 지식을 섞거나 지어내지 마세요. 환각(Hallucination)을 엄격히 금지합니다.
+
+                                [출력 양식] (반드시 아래의 마크다운 양식을 똑같이 복제하여 출력할 것)
+                                ### [순위]. [제안의 핵심 요약 제목]
+                                * 지지 회사 (총 N개사): [회사명1, 회사명2, ...] (중복 제거 후 쉼표로 나열)
+                                * 상세 제안 내용: [해당 제안의 기술적 배경과 핵심 요구사항을 2~3문장으로 명확하고 이해하기 쉽게 요약]
+                                * 관련 문서 번호: [해당 제안이 포함된 원문 기고문 번호들 (예: R1-2600126 등)]
 
                                 [기고문 원문 데이터]
                                 {full_text}
                                 """
-                                response = model.generate_content(prompt)
+                                response = model.generate_content(prompt_paid, generation_config=strict_config)
 
-                        # 파일 생성 및 데이터를 세션 메모리에 보존
                         if response and response.text:
                             r = Document()
                             r.add_heading(f"AI 정밀 분석 요약 ({model_display_name})", 0)
@@ -758,7 +771,6 @@ if page == "🚀 통합 AI 분석기":
                             bio_llm = io.BytesIO()
                             r.save(bio_llm)
                             
-                            # 분석 결과를 영구 보존용 세션 금고에 저장
                             st.session_state.ai_summary_bytes = bio_llm.getvalue()
                             st.session_state.ai_summary_text = response.text
                             st.session_state.ai_model_name = model_display_name
@@ -774,11 +786,8 @@ if page == "🚀 통합 AI 분석기":
                         else:
                             st.error(f"❌ API 호출 중 오류가 발생했습니다. 키가 정확한지 확인해주세요.\n\n[상세 오류 메시지]: {e}")
 
-            # ==========================================
-            # UI 분리: 버튼 블록 밖에서 다운로드 UI 표출 (새로고침 방어)
-            # ==========================================
             if st.session_state.ai_summary_generated:
-                st.success("✅ AI 정밀 요약 파일이 성공적으로 생성되었습니다!")
+                st.success("✅ 전문가 수준의 AI 정밀 요약 파일이 성공적으로 생성되었습니다!")
                 st.download_button(
                     label=f"📥 AI 요약본(Output 3) 최종 다운로드 (.docx)",
                     data=st.session_state.ai_summary_bytes,
