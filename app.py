@@ -537,9 +537,9 @@ if page == "🚀 통합 AI 분석기":
             
             api_tier_choice = st.radio(
                 "API 요금제(Tier) 선택:",
-                ("🟢 무료 티어 (초고속 Flash 모델 적용 + 스마트 백오프)", 
+                ("🟢 무료 티어 (초고속 Flash 모델 적용 + 스마트 속도 조절 5초)", 
                  "🔵 유료 티어 (초정밀 Pro 모델 적용 + 문서 전체 원문 일괄 분석)"),
-                help="무료 API 사용자는 속도 최적화가 적용된 첫 번째 옵션을 선택해 주세요."
+                help="무료 API 사용자는 에러 없는 안정적인 분석을 위해 첫 번째를 선택해 주세요."
             )
             
             user_api_key = st.text_input(
@@ -561,13 +561,11 @@ if page == "🚀 통합 AI 분석기":
 
                         is_free_tier = "무료" in api_tier_choice
                         
-                        # --- 모델 교체 최적화 (Free=Flash, Paid=Pro) ---
+                        # 모델 선택 로직 (무료=Flash 우선, 유료=Pro 우선)
                         if is_free_tier:
-                            # 무료는 속도를 위해 초고속 Flash 모델 우선 선택
                             target_models = [m for m in valid_models if 'flash' in m.lower() and 'vision' not in m.lower()]
                             if not target_models: target_models = [m for m in valid_models if 'pro' in m.lower() and 'vision' not in m.lower()]
                         else:
-                            # 유료는 퀄리티를 위해 초정밀 Pro 모델 우선 선택
                             target_models = [m for m in valid_models if 'pro' in m.lower() and 'vision' not in m.lower()]
                             if not target_models: target_models = valid_models
                             
@@ -579,19 +577,18 @@ if page == "🚀 통합 AI 분석기":
                         # 분할 및 단계별 병합 (Map-Reduce) 로직 실행 (무료 티어 전용)
                         # ==========================================
                         if is_free_tier:
-                            # 배치 사이즈 최적화: 10개 -> 20개로 증가 (호출 횟수 절반 감소)
-                            batch_size = 20 
+                            batch_size = 20 # 20개씩 묶어서 호출 횟수 최소화
                             total_docs = len(st.session_state.extracted_data)
                             total_batches = (total_docs + batch_size - 1) // batch_size
                             
-                            st.info(f"⚡ 무료 티어 최적화 가동: 가장 빠른 `{model_display_name}` 모델을 사용하여 {total_docs}개의 문서를 {total_batches}번의 최고 속도 그룹 분석으로 빠르게 병합합니다.")
+                            st.info(f"⚡ 무료 티어 스마트 분석: 빠르고 똑똑한 `{model_display_name}` 모델을 사용하여 {total_docs}개의 문서를 {total_batches}번의 그룹 분석으로 완벽하게 병합합니다.")
                             
                             progress_bar = st.progress(0)
                             status_text = st.empty()
                             intermediate_summaries = []
                             
                             for i in range(total_batches):
-                                status_text.text(f"🚀 최고 속도로 데이터 요약 중... ({i+1}/{total_batches} 번째 그룹)")
+                                status_text.text(f"🚀 데이터 요약 중... ({i+1}/{total_batches} 번째 그룹)")
                                 batch_data = st.session_state.extracted_data[i*batch_size : (i+1)*batch_size]
                                 
                                 batch_text_buffer = []
@@ -607,31 +604,36 @@ if page == "🚀 통합 AI 분석기":
                                 {batch_text}
                                 """
                                 
-                                # 스마트 백오프 (Smart Backoff) 도입: 멍청한 강제 대기(Sleep) 제거
-                                max_retries = 4
+                                # 구글 1분당 한도(RPM) 리셋을 위한 강력한 방어 로직
+                                max_retries = 3
                                 for attempt in range(max_retries):
                                     try:
                                         res = model.generate_content(prompt_map)
                                         if res and res.text:
                                             intermediate_summaries.append(res.text)
-                                        break # 에러가 안 나면 대기 시간 없이 즉시 통과!
+                                        break
                                     except Exception as e:
-                                        if "429" in str(e) or "Quota" in str(e):
+                                        if "429" in str(e) or "Quota" in str(e) or "exhausted" in str(e).lower():
                                             if attempt < max_retries - 1:
-                                                # 에러 났을 때만 지수적(Exponential)으로 대기 (10초, 20초, 40초...)
-                                                wait_time = 10 * (2 ** attempt) 
-                                                status_text.text(f"⚠️ 구글 서버 속도 제한(RPM) 감지. {wait_time}초 대기 후 최고 속도로 재시도합니다... (시도 {attempt+1}/{max_retries})")
+                                                # 에러 감지 시 확실하게 60초를 대기하여 구글 서버 리셋 유도
+                                                wait_time = 60
+                                                status_text.text(f"⚠️ 구글 1분 처리 한도 도달! 완전히 리셋하기 위해 {wait_time}초 대기합니다... (시도 {attempt+1}/{max_retries})")
                                                 time.sleep(wait_time)
                                             else:
-                                                raise Exception("무료 API 한도(RPM)가 완전히 소진되었습니다. 잠시 후 다시 시도해주세요.")
+                                                raise Exception("무료 API 일일 한도가 소진되었거나 텍스트가 너무 많습니다. NotebookLM을 권장합니다.")
                                         else:
                                             raise e
                                 
                                 progress_bar.progress((i+1)/total_batches)
-                                # 예전처럼 매번 무조건 15초씩 기다리지 않음!
+                                
+                                # 핵심: 다음 그룹으로 넘어가기 전 안전거리 유지 (5초)
+                                # 5초 대기면 1분에 12번 호출이므로 15 RPM 한도에 절대로 걸리지 않음
+                                if i < total_batches - 1:
+                                    status_text.text(f"⏳ 속도 위반 방지를 위해 5초 대기 중... ({i+1}/{total_batches} 완료)")
+                                    time.sleep(5)
                                     
                             # 최종 병합 (Reduce)
-                            status_text.text("🧠 모든 그룹 분석 완료! 최종 결과물로 번개같이 병합하는 중입니다...")
+                            status_text.text("🧠 모든 그룹 분석 완료! 최종 결과물로 병합하는 중입니다...")
                             final_input = "\n\n=== 그룹별 1차 요약본 모음 ===\n\n".join(intermediate_summaries)
                             
                             prompt_reduce = f"""
@@ -713,7 +715,7 @@ if page == "🚀 통합 AI 분석기":
                     except Exception as e:
                         error_msg = str(e)
                         if "429" in error_msg or "Quota" in error_msg or "exhausted" in error_msg.lower():
-                            st.error("❌ **[API 용량 초과 안내]** 선택하신 요금제의 처리 한도를 완전히 초과했습니다. 잠시 후 다시 시도하시거나, 왼쪽 탭의 **[📘 구글 NotebookLM 사용하기]**를 이용해 주세요.")
+                            st.error("❌ **[API 용량 초과 안내]** 무료 일일 제공량을 완전히 소진했거나 텍스트가 너무 방대합니다. 왼쪽 탭의 **[📘 구글 NotebookLM 사용하기]**를 이용해 주세요.")
                         else:
                             st.error(f"❌ API 호출 중 오류가 발생했습니다. 키가 정확한지 확인해주세요.\n\n[상세 오류 메시지]: {e}")
 
