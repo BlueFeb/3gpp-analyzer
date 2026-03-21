@@ -38,7 +38,7 @@ if "extracted_data" not in st.session_state:
     st.session_state.extracted_data = []
 if "notebooklm_txt" not in st.session_state:
     st.session_state.notebooklm_txt = None
-# --- AI 요약 결과물 보존을 위한 세션 변수 추가 ---
+# --- AI 요약 결과물 보존을 위한 세션 변수 ---
 if "ai_summary_generated" not in st.session_state:
     st.session_state.ai_summary_generated = False
 if "ai_summary_bytes" not in st.session_state:
@@ -110,9 +110,11 @@ def read_excel_from_bytes(uploaded_file):
         
         if not docid: continue
         
+        # 하이퍼링크가 있어야 SA, CT 등 모든 그룹의 문서를 정확히 다운로드 가능
         if getattr(cell, "hyperlink", None) and cell.hyperlink.target:
             link = cell.hyperlink.target
         else:
+            # 링크가 없을 경우 RAN1을 기본값으로 추정 (사용자 주의 필요)
             link = f"https://www.3gpp.org/ftp/tsg_ran/WG1_RL1/TSGR1_122/Docs/{docid}.zip"
         entries.append({"doc": docid, "company": company, "link": link})
     return entries
@@ -448,16 +450,18 @@ if page == "🚀 통합 AI 분석기":
     # 단계 1: 데이터 입력
     # ------------------------------------
     st.header("1️⃣ 단계: 데이터 입력")
+    st.info("💡 **SA, CT 등 3GPP의 모든 워킹그룹 기고문을 100% 완벽하게 지원합니다.** 단, 엑셀 파일 업로드 시 1열의 문서번호에 반드시 **'다운로드 원문 하이퍼링크'**가 걸려 있어야 정확하게 작동합니다.")
+    
     input_method = st.radio("입력 방식 선택:", ("Excel 파일 업로드", "링크 텍스트 직접 입력"))
     entries = []
 
     if input_method == "Excel 파일 업로드":
-        uploaded_file = st.file_uploader("엑셀(.xlsx) 파일 선택 (1열 docid, 3열 company 양식 준수)", type=["xlsx", "xls"])
+        uploaded_file = st.file_uploader("엑셀(.xlsx) 파일 선택 (1열 하이퍼링크 필수, 3열 company 양식 준수)", type=["xlsx", "xls"])
         if uploaded_file is not None:
             entries = read_excel_from_bytes(uploaded_file)
             st.info(f"총 {len(entries)}개의 문서 링크를 인식했습니다.")
     else:
-        raw_text = st.text_area("3GPP 기고문 링크들을 한 줄에 하나씩 붙여넣으세요.", height=150)
+        raw_text = st.text_area("3GPP 기고문 원문 링크(.zip)들을 한 줄에 하나씩 붙여넣으세요.", height=150)
         if raw_text:
             lines = [url.strip() for url in raw_text.split('\n') if url.strip()]
             for line in lines:
@@ -542,13 +546,30 @@ if page == "🚀 통합 AI 분석기":
                     )
             
             st.markdown("---")
-            st.markdown("#### 📋 1분 만에 끝내는 NotebookLM 요약 가이드")
+            st.markdown("#### 📋 1분 만에 끝내는 NotebookLM 완벽 요약 가이드")
             st.markdown("1. 위 버튼을 눌러 **텍스트 파일(.txt)**을 내 PC에 저장합니다.")
             st.markdown("2. 👉 **[Google NotebookLM 공식 사이트](https://notebooklm.google.com/)** 에 접속하여 로그인합니다.")
             st.markdown("3. 화면의 **'새 노트북(New Notebook)'** 버튼을 누르고, 좌측 소스 탭에 방금 받은 `.txt` 파일을 끌어다 놓습니다.")
-            st.markdown("4. 화면 하단 채팅창에 아래의 **전문가용 프롬프트**를 복사하여 붙여넣고 전송(Enter)하면 끝!")
             
-            st.code("이 문서 안의 모든 회사들의 기고문들을 검토하고, 회사들이 지지하는 동일 또는 유사한 제안 (Proposal)들을 하나로 묶어주세요. 가장 많은 회사들이 지지하는 제안 부터 순서대로 2개 이상의 회사가 지지하는 제안들만 찾아서 명확하게 나열 해줄래? 각 제안마다 지지하는 회사들의 이름도 반드시 함께 적어주세요.", language="text")
+            st.error("🚨 **[중요] 무한 로딩 현상 대처 꿀팁:** 파일 업로드 후, 우측 패널에서 파일명 옆에 체크표시(✅)가 안 뜨고 **계속 빙글빙글 돌며 무한 로딩**이 걸리는 경우가 종종 있습니다. 이는 화면상 표기 버그일 뿐 실제로는 분석이 끝난 상태입니다! 당황하지 마시고 **그냥 무시한 채로 바로 아래 채팅창에 질문을 전송**하시거나, **F5(새로고침)를 한 번 눌러주시면** 정상 작동합니다.")
+            
+            st.markdown("4. 화면 하단 채팅창에 아래의 **구조화된 전문가용 프롬프트**를 복사하여 붙여넣고 전송(Enter)하면 완벽한 포맷의 요약이 도출됩니다!")
+            
+            # --- 개선된 전문가용 프롬프트 ---
+            prompt_text = """당신은 3GPP 표준화 회의의 전문 기술 분석가입니다. 제공된 모든 기고문(문서)의 결론 및 제안(Proposal) 섹션을 꼼꼼히 검토하고, 아래의 [분석 지침]과 [출력 양식]을 엄격하게 준수하여 분석 보고서를 작성해 주세요.
+
+[분석 지침]
+1. 필터링: 반드시 "2개 이상의 회사"가 공통으로 지지하거나 유사한 기술적 주장을 하는 제안(Proposal)만 추출하세요. (1개 회사만 단독으로 주장한 내용은 완전히 제외합니다.)
+2. 그룹화: 단어 형태가 달라도 '기술적 핵심 의미와 목적'이 동일하다면 하나의 그룹으로 묶어주세요.
+3. 정렬: 지지하는 회사 수가 가장 많은 제안 그룹부터 '내림차순'으로 정렬하세요.
+4. 제약사항: 오직 제공된 소스 문서에 명시된 내용과 회사명만 사용하고, 절대 외부 지식을 섞거나 지어내지 마세요.
+
+[출력 양식] (반드시 아래의 마크다운 양식을 똑같이 복제하여 출력할 것)
+### [순위]. [제안의 핵심 요약 제목]
+* 지지 회사 (총 N개사): [회사명1, 회사명2, ...] (중복 제거 후 쉼표로 나열)
+* 상세 제안 내용: [해당 제안의 기술적 배경과 핵심 요구사항을 2~3문장으로 명확하고 이해하기 쉽게 요약]
+* 관련 문서 번호: [해당 제안이 포함된 원문 기고문 번호들 (예: R1-2600126 등)]"""
+            st.code(prompt_text, language="text")
 
         with tab2:
             with st.expander("📖 무료/유료 API 키 발급 및 설정 가이드 (순서대로 따라만 하세요!)", expanded=False):
@@ -676,15 +697,16 @@ if page == "🚀 통합 AI 분석기":
                             final_input = "\n\n=== 그룹별 1차 요약본 모음 ===\n\n".join(intermediate_summaries)
                             
                             prompt_reduce = f"""
-                            아래 텍스트는 3GPP 표준회의에 제출된 모든 기고문들을 바탕으로 추출된 1차 요약본 모음입니다.
+                            당신은 3GPP 표준화 회의의 전문 기술 분석가입니다.
+                            아래 텍스트는 3GPP 표준회의에 제출된 기고문들을 바탕으로 추출된 1차 요약본 모음입니다.
                             이 내용들을 종합하여 동일하거나 유사한 제안(Proposal)들을 완벽하게 하나로 묶어주세요.
                             가장 많은 회사들이 지지하는 제안부터 순서대로 나열하고, 아래 양식을 엄격히 지켜서 한국어로 작성해주세요.
                             없는 내용을 절대 지어내지(Hallucination) 마세요.
 
                             [출력 양식]
-                            X. [제안의 핵심 요약 제목]
-                            지지 회사 (N개사): [회사명 나열, 중복 제거]
-                            제안 내용: [해당 제안의 상세 내용 및 배경을 2~3문장으로 자연스럽고 명확하게 요약]
+                            ### X. [제안의 핵심 요약 제목]
+                            * 지지 회사 (총 N개사): [회사명 나열, 중복 제거]
+                            * 제안 내용: [해당 제안의 상세 내용 및 배경을 2~3문장으로 자연스럽고 명확하게 요약]
 
                             [1차 요약본 모음]
                             {final_input}
@@ -705,15 +727,16 @@ if page == "🚀 통합 AI 분석기":
                                 full_text = "\n\n".join(extracted_text_buffer)
                                 
                                 prompt = f"""
+                                당신은 3GPP 표준화 회의의 전문 기술 분석가입니다.
                                 아래 텍스트는 3GPP 표준회의에 제출된 여러 회사들의 방대한 기고문 전체 원문 모음입니다.
                                 이 모든 회사들의 기고문들을 깊이 있게 검토하고, 동일 또는 유사한 제안(Proposal)들을 묶어주세요.
                                 가장 많은 회사들이 지지하는 제안부터 순서대로 나열하고, 각 제안마다 아래 양식을 엄격히 지켜서 한국어로 작성해주세요.
                                 없는 내용을 절대 지어내지(Hallucination) 마세요.
 
                                 [출력 양식]
-                                X. [제안의 핵심 요약 제목]
-                                지지 회사 (N개사): [회사명 나열, 중복 제거]
-                                제안 내용: [해당 제안의 상세 내용 및 배경을 2~3문장으로 자연스럽고 명확하게 요약]
+                                ### X. [제안의 핵심 요약 제목]
+                                * 지지 회사 (총 N개사): [회사명 나열, 중복 제거]
+                                * 제안 내용: [해당 제안의 상세 내용 및 배경을 2~3문장으로 자연스럽고 명확하게 요약]
 
                                 [기고문 원문 데이터]
                                 {full_text}
@@ -726,9 +749,9 @@ if page == "🚀 통합 AI 분석기":
                             r.add_heading(f"AI 정밀 분석 요약 ({model_display_name})", 0)
                             
                             for line in response.text.split('\n'):
-                                if re.match(r'^\d+\.', line.strip()):
+                                if re.match(r'^(#+)?\s*\d+\.|###', line.strip()):
                                     p = r.add_paragraph()
-                                    p.add_run(line).bold = True
+                                    p.add_run(line.replace('#', '').strip()).bold = True
                                 else:
                                     r.add_paragraph(line)
                             
@@ -774,18 +797,25 @@ elif page == "📁 3GPP FTP 탐색기":
     
     st.subheader("🔗 주요 Working Group 회의록 FTP 접속")
     st.markdown("""
-    * [RAN1 (물리계층) FTP 서버 바로가기](https://www.3gpp.org/ftp/tsg_ran/WG1_RL1/)
-    * [RAN2 (무선 인터페이스 구조) FTP 서버 바로가기](https://www.3gpp.org/ftp/tsg_ran/WG2_RL2/)
-    * [RAN3 (네트워크 아키텍처) FTP 서버 바로가기](https://www.3gpp.org/ftp/tsg_ran/WG3_IU/)
+    * **RAN WG (무선 접속망)**
+        * [RAN1 (물리계층) 바로가기](https://www.3gpp.org/ftp/tsg_ran/WG1_RL1/)
+        * [RAN2 (무선 인터페이스 구조) 바로가기](https://www.3gpp.org/ftp/tsg_ran/WG2_RL2/)
+        * [RAN3 (네트워크 아키텍처) 바로가기](https://www.3gpp.org/ftp/tsg_ran/WG3_IU/)
+    * **SA WG (서비스 및 시스템 아키텍처)**
+        * [SA1 (서비스) 바로가기](https://www.3gpp.org/ftp/tsg_sa/WG1_Serv/)
+        * [SA2 (아키텍처) 바로가기](https://www.3gpp.org/ftp/tsg_sa/WG2_Arch/)
+    * **CT WG (코어 네트워크 및 단말)**
+        * [CT1 (단말/코어 프로토콜) 바로가기](https://www.3gpp.org/ftp/tsg_ct/WG1_mm-cc-sm_ex-CN1/)
+        * [CT3 (인터워킹) 바로가기](https://www.3gpp.org/ftp/tsg_ct/WG3_interworking_ex-CN3/)
     """)
     
     st.subheader("📖 기고문 번호(TDoc) 읽는 법")
     st.write("""
-    3GPP 기고문은 일반적으로 `R1-2505131` 과 같은 형태를 가집니다.
-    - **R1:** RAN WG1 회의를 의미합니다.
-    - **25:** 2025년에 제출되었음을 의미합니다.
-    - **05131:** 해당 연도의 기고문 일련번호입니다.
-    이를 통해 기고문이 언제 제출되었고 어떤 그룹에서 논의되는지 한눈에 파악할 수 있습니다.
+    3GPP 기고문은 일반적으로 WG 그룹명과 연도, 일련번호 조합을 가집니다. (예: `R1-2505131`, `S2-250123`)
+    - **앞자리 (R1, S2, C1 등):** 워킹그룹(Working Group)을 의미합니다.
+    - **중간 (25):** 2025년에 제출되었음을 의미합니다.
+    - **뒷자리 (05131):** 해당 연도의 기고문 일련번호입니다.
+    이를 통해 기고문이 어느 그룹에서 언제 제출되었는지 쉽게 파악할 수 있습니다.
     """)
 
 # --- 페이지 3: 소개 및 가이드 ---
@@ -796,8 +826,9 @@ elif page == "ℹ️ 소개 및 가이드":
     
     st.markdown("### 1단계: 분석할 기고문 데이터 준비하기")
     st.write("""
-    1. 분석하고 싶은 3GPP 기고문들의 링크나 문서 번호를 확보합니다.
-    2. 엑셀 파일을 만드실 경우, **1열에는 문서번호(예: R1-250001), 3열에는 회사명(예: Samsung)**을 적어주세요.
+    1. 분석하고 싶은 3GPP 기고문들의 링크나 문서 번호를 확보합니다. (**SA, CT, RAN 등 모든 워킹그룹 완벽 호환**)
+    2. 엑셀 파일을 만드실 경우, **1열에는 문서번호, 3열에는 회사명**을 적어주세요. 
+    🚨 **[주의]** SA나 CT 문서를 엑셀로 업로드할 때는, 프로그램이 정확한 서버를 찾을 수 있도록 **1열 문서번호 셀에 반드시 '원문 다운로드 하이퍼링크'가 걸려 있어야 합니다.**
     """)
     
     st.markdown("### 2단계: 메인 분석기 실행하기 (결론 자동 추출)")
@@ -813,14 +844,8 @@ elif page == "ℹ️ 소개 및 가이드":
     
     **[NotebookLM 100% 활용 가이드]**
     * **환각(Hallucination) 제로:** 일반 챗봇과 달리, 오직 내가 업로드한 문서(소스)에서만 정답을 찾기 때문에 없는 회사나 제안을 지어내지 않습니다.
-    * **엄청난 무료 용량:** 노트북 1개당 최대 **50개의 문서**, 각 문서당 최대 **50만 단어**까지 완전 무료로 업로드할 수 있어 토큰 제한(429 에러) 걱정이 없습니다.
-    * **투명한 출처 표기:** 요약본 뒤에 인용구(Citation) 번호가 달려서, 원문의 어떤 부분에서 해당 내용이 발췌되었는지 클릭 한 번으로 검증할 수 있습니다.
-    
-    **[사용 방법]**
-    1. 본 프로그램의 3단계 화면에서 **`NotebookLM 전용 텍스트 파일(.txt)`**을 다운로드합니다.
-    2. [NotebookLM 공식 웹사이트](https://notebooklm.google.com/)에 접속하여 로그인합니다.
-    3. **'새 노트북(New Notebook)'**을 만들고 좌측의 소스 추가 메뉴에 방금 다운로드한 텍스트 파일을 끌어다 놓습니다.
-    4. 채팅창에 프로그램에서 안내된 **추천 프롬프트**를 복사해서 붙여넣고 요약을 지시하면 완벽하게 정리된 결과물을 얻을 수 있습니다.
+    * **엄청난 무료 용량:** 노트북 1개당 최대 **50개의 문서**, 각 문서당 최대 **50만 단어**까지 완전 무료로 업로드할 수 있어 에러 걱정이 없습니다.
+    * **투명한 출처 표기:** 요약본 뒤에 인용구 번호가 달려서, 원문의 어떤 부분에서 해당 내용이 발췌되었는지 클릭 한 번으로 검증할 수 있습니다.
     """)
     
     st.markdown("---")
