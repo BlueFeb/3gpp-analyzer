@@ -20,7 +20,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import google.generativeai as genai
 
 # ==========================================
-# 1. 환경 설정 및 세션 초기화
+# 1. 환경 설정 및 세션 초기화 (메모리 안정성 강화)
 # ==========================================
 st.set_page_config(page_title="3GPP AI Analyzer Pro", page_icon="📡", layout="wide")
 
@@ -30,14 +30,23 @@ if "log_text" not in st.session_state:
     st.session_state.log_text = ""
 if "process_done" not in st.session_state:
     st.session_state.process_done = False
-if "out1_bio" not in st.session_state:
-    st.session_state.out1_bio = None
-if "out2_bio" not in st.session_state:
-    st.session_state.out2_bio = None
+if "out1_bytes" not in st.session_state:
+    st.session_state.out1_bytes = None
+if "out2_bytes" not in st.session_state:
+    st.session_state.out2_bytes = None
 if "extracted_data" not in st.session_state:
     st.session_state.extracted_data = []
 if "notebooklm_txt" not in st.session_state:
     st.session_state.notebooklm_txt = None
+# --- AI 요약 결과물 보존을 위한 세션 변수 추가 ---
+if "ai_summary_generated" not in st.session_state:
+    st.session_state.ai_summary_generated = False
+if "ai_summary_bytes" not in st.session_state:
+    st.session_state.ai_summary_bytes = None
+if "ai_summary_text" not in st.session_state:
+    st.session_state.ai_summary_text = ""
+if "ai_model_name" not in st.session_state:
+    st.session_state.ai_model_name = ""
 
 def append_log(text):
     st.session_state.log_text += f"{text}\n"
@@ -146,13 +155,13 @@ def repackage_docm_to_docx(path, td):
     os.rename(rp, out)
     return out
 
-def _download_doc(entry, td, headers):
+def _download_doc(entry, td_name, headers):
     try:
         kwargs = {"headers": headers, "timeout": 60, "verify": False}
         if USE_PROXY: kwargs["proxies"] = INTERNAL_PROXY
         r = requests.get(entry["link"], **kwargs)
         r.raise_for_status()
-        fp = os.path.join(td.name, f"{entry['doc']}.zip")
+        fp = os.path.join(td_name, f"{entry['doc']}.zip")
         with open(fp, "wb") as f:
             f.write(r.content)
         return entry, fp, None
@@ -160,141 +169,141 @@ def _download_doc(entry, td, headers):
         return entry, None, str(ex)
 
 def extract_all_conclusions(entries, status_elem, progress_elem, log_func):
-    td = tempfile.TemporaryDirectory()
-    log_func(f"임시 디렉터리 생성: {td.name}")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        log_func(f"임시 디렉터리 생성: {temp_dir}")
 
-    od = Document()
-    od.add_heading("3GPP Conclusions", level=0)
-    
-    cps = [re.compile(r"^(?:#\s*)?(?:\d+\.?\s*)?(conclusions?)\s*$", re.I), re.compile(r"^(?:#\s*)?(?:\d+\.?\s*)?(summary)\s*$", re.I)]
-    eps = [re.compile(r"^(?:#\s*)?(?:\d+\.?\s*)?(references?|appendix|acknowledgment)\s*$", re.I)]
-    headers = {"User-Agent": "Mozilla/5.0"}
+        od = Document()
+        od.add_heading("3GPP Conclusions", level=0)
+        
+        cps = [re.compile(r"^(?:#\s*)?(?:\d+\.?\s*)?(conclusions?)\s*$", re.I), re.compile(r"^(?:#\s*)?(?:\d+\.?\s*)?(summary)\s*$", re.I)]
+        eps = [re.compile(r"^(?:#\s*)?(?:\d+\.?\s*)?(references?|appendix|acknowledgment)\s*$", re.I)]
+        headers = {"User-Agent": "Mozilla/5.0"}
 
-    download_results = []
-    extracted_list = []
-    total = len(entries)
-    
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {executor.submit(_download_doc, e, td, headers): e for e in entries}
-        for i, fut in enumerate(as_completed(futures), start=1):
-            e, fp, err = fut.result()
-            download_results.append((e, fp, err))
-            progress_elem.progress(i / total)
-            status_elem.text(f"Downloaded [{i}/{total}]: {e['doc']}")
-            log_func(f"[{i}/{total}] Downloaded: {e['doc']}")
+        download_results = []
+        extracted_list = []
+        total = len(entries)
+        
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(_download_doc, e, temp_dir, headers): e for e in entries}
+            for i, fut in enumerate(as_completed(futures), start=1):
+                e, fp, err = fut.result()
+                download_results.append((e, fp, err))
+                progress_elem.progress(i / total)
+                status_elem.text(f"Downloaded [{i}/{total}]: {e['doc']}")
+                log_func(f"[{i}/{total}] Downloaded: {e['doc']}")
 
-    for idx, (e, fp, err) in enumerate(download_results, start=1):
-        status_elem.text(f"Extracting [{idx}/{total}]: {e['doc']}")
-        doc_text_buffer = []
-        full_text_buffer = []
+        for idx, (e, fp, err) in enumerate(download_results, start=1):
+            status_elem.text(f"Extracting [{idx}/{total}]: {e['doc']}")
+            doc_text_buffer = []
+            full_text_buffer = []
 
-        tbl = od.add_table(rows=4, cols=2, style="Table Grid")
-        tbl.cell(0, 0).text, tbl.cell(0, 1).text = "Document", e["doc"]
-        tbl.cell(1, 0).text, tbl.cell(1, 1).text = "Link", e["link"]
-        tbl.cell(2, 0).text, tbl.cell(2, 1).text = "Company", e["company"]
-        tbl.cell(3, 0).text = "Title"
+            tbl = od.add_table(rows=4, cols=2, style="Table Grid")
+            tbl.cell(0, 0).text, tbl.cell(0, 1).text = "Document", e["doc"]
+            tbl.cell(1, 0).text, tbl.cell(1, 1).text = "Link", e["link"]
+            tbl.cell(2, 0).text, tbl.cell(2, 1).text = "Company", e["company"]
+            tbl.cell(3, 0).text = "Title"
 
-        try:
-            if err or not fp: raise Exception(err or "Download failed")
-
-            ed = os.path.join(td.name, e["doc"])
-            os.makedirs(ed, exist_ok=True)
-            with zipfile.ZipFile(fp) as zf:
-                zf.extractall(ed)
-
-            src_path = None
-            for ext in ("*.docx", "*.docm", "*.doc"):
-                src_path = next(Path(ed).rglob(ext), None)
-                if src_path: break
-
-            if not src_path:
-                od.add_paragraph("DOC 파일을 찾을 수 없습니다.")
-                log_func(f"{e['doc']} 없음")
-                continue
-
-            file_path_str = str(src_path)
-            
-            if src_path.suffix.lower() == ".docm":
-                try:
-                    file_path_str = repackage_docm_to_docx(file_path_str, td.name)
-                except Exception as ex:
-                    log_func(f"{e['doc']} docm 변환 오류: {ex}")
-            
             try:
-                sd = Document(file_path_str)
-            except Exception as ex:
-                od.add_paragraph(f"문서를 열 수 없습니다 (구형 .doc 파일이거나 손상됨): {ex}")
-                log_func(f"{e['doc']} 문서 파싱 에러: {ex}")
-                continue
+                if err or not fp: raise Exception(err or "Download failed")
+
+                ed = os.path.join(temp_dir, e["doc"])
+                os.makedirs(ed, exist_ok=True)
+                with zipfile.ZipFile(fp) as zf:
+                    zf.extractall(ed)
+
+                src_path = None
+                for ext in ("*.docx", "*.docm", "*.doc"):
+                    src_path = next(Path(ed).rglob(ext), None)
+                    if src_path: break
+
+                if not src_path:
+                    od.add_paragraph("DOC 파일을 찾을 수 없습니다.")
+                    log_func(f"{e['doc']} 없음")
+                    continue
+
+                file_path_str = str(src_path)
                 
-            title = ""
-            paras = sd.paragraphs
-            
-            for p in paras:
-                t = p.text.strip()
-                if t:
-                    full_text_buffer.append(t)
-                if not title and t.lower().startswith("title:"):
-                    title = t.split(":", 1)[1].strip()
+                if src_path.suffix.lower() == ".docm":
+                    try:
+                        file_path_str = repackage_docm_to_docx(file_path_str, temp_dir)
+                    except Exception as ex:
+                        log_func(f"{e['doc']} docm 변환 오류: {ex}")
+                
+                try:
+                    sd = Document(file_path_str)
+                except Exception as ex:
+                    od.add_paragraph(f"문서를 열 수 없습니다 (구형 .doc 파일이거나 손상됨): {ex}")
+                    log_func(f"{e['doc']} 문서 파싱 에러: {ex}")
+                    continue
                     
-            if not title:
-                title = sd.core_properties.title or ""
-            tbl.cell(3, 1).text = title
+                title = ""
+                paras = sd.paragraphs
+                
+                for p in paras:
+                    t = p.text.strip()
+                    if t:
+                        full_text_buffer.append(t)
+                    if not title and t.lower().startswith("title:"):
+                        title = t.split(":", 1)[1].strip()
+                        
+                if not title:
+                    title = sd.core_properties.title or ""
+                tbl.cell(3, 1).text = title
 
-            start = None
-            for pat in cps:
-                for j, p in enumerate(paras):
-                    if pat.match(p.text.strip()):
-                        start = j
-                        break
-                if start is not None: break
-
-            if start is None:
-                od.add_paragraph("결론 섹션 없음")
-                log_func(f"{e['doc']} 결론없음")
-            else:
-                end = len(paras)
-                for ep in eps:
-                    for j, p in enumerate(paras[start + 1 :], start + 1):
-                        if ep.match(p.text.strip()):
-                            end = j
+                start = None
+                for pat in cps:
+                    for j, p in enumerate(paras):
+                        if pat.match(p.text.strip()):
+                            start = j
                             break
-                    if end < len(paras): break
-                for j in range(start + 1, end):
-                    clone_paragraph(paras[j], od)
-                    doc_text_buffer.append(paras[j].text)
-                log_func(f"{e['doc']} 추출 완료")
+                    if start is not None: break
 
-            extracted_list.append({
-                "doc": e["doc"], "company": e["company"], "link": e["link"], 
-                "title": title, 
-                "content": "\n".join(doc_text_buffer) if doc_text_buffer else "Conclusion 섹션을 찾지 못했습니다.",
-                "full_content": "\n".join(full_text_buffer) if full_text_buffer else "원문 텍스트를 추출하지 못했습니다."
-            })
+                if start is None:
+                    od.add_paragraph("결론 섹션 없음")
+                    log_func(f"{e['doc']} 결론없음")
+                else:
+                    end = len(paras)
+                    for ep in eps:
+                        for j, p in enumerate(paras[start + 1 :], start + 1):
+                            if ep.match(p.text.strip()):
+                                end = j
+                                break
+                        if end < len(paras): break
+                    for j in range(start + 1, end):
+                        clone_paragraph(paras[j], od)
+                        doc_text_buffer.append(paras[j].text)
+                    log_func(f"{e['doc']} 추출 완료")
 
-        except Exception as ex:
-            od.add_paragraph(f"오류 - {e['doc']}: {ex}")
-            log_func(str(ex))
+                extracted_list.append({
+                    "doc": e["doc"], "company": e["company"], "link": e["link"], 
+                    "title": title, 
+                    "content": "\n".join(doc_text_buffer) if doc_text_buffer else "Conclusion 섹션을 찾지 못했습니다.",
+                    "full_content": "\n".join(full_text_buffer) if full_text_buffer else "원문 텍스트를 추출하지 못했습니다."
+                })
 
-        if idx < len(download_results):
-            od.add_page_break()
+            except Exception as ex:
+                od.add_paragraph(f"오류 - {e['doc']}: {ex}")
+                log_func(str(ex))
 
-    st.session_state.extracted_data = extracted_list
-    
-    txt_buffer = []
-    txt_buffer.append("=== 3GPP Contributions Conclusions ===")
-    for item in extracted_list:
-        txt_buffer.append(f"\n\n--- Document: {item['doc']} ---")
-        txt_buffer.append(f"Company: {item['company']}")
-        txt_buffer.append(f"Title: {item['title']}")
-        txt_buffer.append("Content:")
-        txt_buffer.append(item['content'])
-    st.session_state.notebooklm_txt = "\n".join(txt_buffer)
+            if idx < len(download_results):
+                od.add_page_break()
 
-    bio = io.BytesIO()
-    od.save(bio)
-    bio.seek(0)
-    td.cleanup()
+        st.session_state.extracted_data = extracted_list
+        
+        txt_buffer = []
+        txt_buffer.append("=== 3GPP Contributions Conclusions ===")
+        for item in extracted_list:
+            txt_buffer.append(f"\n\n--- Document: {item['doc']} ---")
+            txt_buffer.append(f"Company: {item['company']}")
+            txt_buffer.append(f"Title: {item['title']}")
+            txt_buffer.append("Content:")
+            txt_buffer.append(item['content'])
+        st.session_state.notebooklm_txt = "\n".join(txt_buffer)
+
+        bio = io.BytesIO()
+        od.save(bio)
+        bio.seek(0)
+        
     return bio
 
 class TFIDFEmbedder:
@@ -470,6 +479,10 @@ if page == "🚀 통합 AI 분석기":
             st.session_state.log_text = ""
             st.session_state.process_done = False
             
+            # 이전 AI 분석 기록 초기화
+            st.session_state.ai_summary_generated = False
+            st.session_state.ai_summary_bytes = None
+            
             status_elem = st.empty()
             progress_elem = st.progress(0)
             
@@ -482,19 +495,20 @@ if page == "🚀 통합 AI 분석기":
             status_elem.text("✅ 기본 분석 작업이 완료되었습니다!")
             progress_elem.progress(1.0)
             
-            st.session_state.out1_bio = out1_bio
-            st.session_state.out2_bio = out2_bio
+            # Bytes로 영구 보존하여 다운로드 시 증발 에러 방지
+            st.session_state.out1_bytes = out1_bio.getvalue()
+            st.session_state.out2_bytes = out2_bio.getvalue()
             st.session_state.process_done = True
 
     if st.session_state.process_done:
         st.success("🎉 추출 완료! 아래에서 결과물을 다운로드하거나 바로 AI 정밀 요약을 진행할 수 있습니다.")
         col1, col2 = st.columns(2)
         with col1:
-            if st.session_state.out1_bio:
-                st.download_button("📥 Output 1 다운로드 (Conclusions 취합.docx)", data=st.session_state.out1_bio, file_name="output1_conclusions.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            if st.session_state.out1_bytes:
+                st.download_button("📥 Output 1 다운로드 (Conclusions 취합.docx)", data=st.session_state.out1_bytes, file_name="output1_conclusions.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         with col2:
-            if st.session_state.out2_bio:
-                st.download_button("📥 Output 2 다운로드 (TF-IDF 요약.docx)", data=st.session_state.out2_bio, file_name="output2_summary_tfidf.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            if st.session_state.out2_bytes:
+                st.download_button("📥 Output 2 다운로드 (TF-IDF 요약.docx)", data=st.session_state.out2_bytes, file_name="output2_summary_tfidf.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         
         # ------------------------------------
         # 단계 3: NotebookLM 내보내기 & AI 정밀 요약
@@ -503,36 +517,67 @@ if page == "🚀 통합 AI 분석기":
         st.header("3️⃣ 단계: AI 정밀 분석 및 요약")
         st.write("추출된 결론을 바탕으로 여러 회사의 유사 제안을 문맥 단위로 묶어 완벽한 요약본을 생성합니다.")
         
-        tab1, tab2 = st.tabs(["📘 구글 NotebookLM 사용하기 (대용량 추천)", "⚡ 내장 Gemini API로 요약하기 (자동화)"])
+        tab1, tab2 = st.tabs(["📘 구글 NotebookLM 활용하기 (강력 추천🌟)", "⚡ 내장 Gemini API로 요약하기"])
         
         with tab1:
-            st.info("💡 **대량의 문서를 오류 없이 한 번에 분석하는 방법입니다.** 텍스트 파일(.txt)을 다운로드하여 NotebookLM에 바로 업로드하세요.")
+            st.success("💡 **환각(Hallucination) 제로! 대용량 문서 처리에 가장 추천하는 방법입니다.**\nNotebookLM은 오직 업로드한 문서 기반으로만 답변을 생성하여 압도적인 정확도를 자랑합니다.")
             
-            if st.session_state.notebooklm_txt:
-                st.download_button(
-                    label="📝 NotebookLM 전용 텍스트 파일(.txt) 다운로드",
-                    data=st.session_state.notebooklm_txt.encode('utf-8'),
-                    file_name="NotebookLM_Input_Conclusions.txt",
-                    mime="text/plain",
-                    type="primary"
-                )
-                
-            st.markdown("#### 📋 NotebookLM 프롬프트 가이드")
-            st.write("파일을 업로드한 후, 아래의 텍스트를 복사하여 NotebookLM 대화창에 붙여넣으세요.")
-            st.code("이 모든 회사들의 기고문들을 검토하고, 회사들이 지지하는 동일 또는 유사한 제안 (Proposal)들을, 가장 많은 회사들이 지지하는 제안 부터 2개 이상의 회사가 지지하는 제안들만 찾아서 나열 해줄래?", language="text")
+            col_a, col_b = st.columns([2, 1])
+            with col_a:
+                st.markdown("""
+                **[NotebookLM의 압도적 장점]**
+                * **제한 없는 속도 & 무료:** 복잡한 API 키 발급이나 토큰 초과(429) 에러 없이 **완전 무료**로 즉시 사용 가능!
+                * **초대용량 지원:** 노트북 당 **최대 50개의 파일**, 파일당 **최대 50만 단어(약 2,500만 자)**까지 한 번에 거뜬히 분석.
+                * **투명한 출처 표기:** 요약된 문장이 원문 기고문의 어느 회사의 어떤 부분인지 정확히 짚어주는 인용(Citation) 링크 제공.
+                """)
+            with col_b:
+                if st.session_state.notebooklm_txt:
+                    st.download_button(
+                        label="📝 NotebookLM 전용\n 텍스트(.txt) 다운로드",
+                        data=st.session_state.notebooklm_txt.encode('utf-8'),
+                        file_name="NotebookLM_Input_Conclusions.txt",
+                        mime="text/plain",
+                        type="primary",
+                        use_container_width=True
+                    )
+            
+            st.markdown("---")
+            st.markdown("#### 📋 1분 만에 끝내는 NotebookLM 요약 가이드")
+            st.markdown("1. 위 버튼을 눌러 **텍스트 파일(.txt)**을 내 PC에 저장합니다.")
+            st.markdown("2. 👉 **[Google NotebookLM 공식 사이트](https://notebooklm.google.com/)** 에 접속하여 로그인합니다.")
+            st.markdown("3. 화면의 **'새 노트북(New Notebook)'** 버튼을 누르고, 좌측 소스 탭에 방금 받은 `.txt` 파일을 끌어다 놓습니다.")
+            st.markdown("4. 화면 하단 채팅창에 아래의 **전문가용 프롬프트**를 복사하여 붙여넣고 전송(Enter)하면 끝!")
+            
+            st.code("이 문서 안의 모든 회사들의 기고문들을 검토하고, 회사들이 지지하는 동일 또는 유사한 제안 (Proposal)들을 하나로 묶어주세요. 가장 많은 회사들이 지지하는 제안 부터 순서대로 2개 이상의 회사가 지지하는 제안들만 찾아서 명확하게 나열 해줄래? 각 제안마다 지지하는 회사들의 이름도 반드시 함께 적어주세요.", language="text")
 
         with tab2:
-            with st.expander("📖 무료/유료 API 키 발급 및 설정 가이드 (필독)"):
+            with st.expander("📖 무료/유료 API 키 발급 및 설정 가이드 (순서대로 따라만 하세요!)", expanded=False):
                 st.markdown("""
-                **[🟢 무료 티어 (Free Tier) 발급 방법]**
-                1. [Google AI Studio](https://aistudio.google.com/app/apikey)에 접속하여 구글 계정으로 로그인합니다.
-                2. 화면 우측 상단의 **'Create API key'** 버튼을 클릭합니다.
-                3. 새 프로젝트에서 만들기(Create API key in new project)를 선택합니다.
-                4. 생성된 `AIzaSy...` 로 시작하는 긴 문자를 복사하여 아래에 입력하세요.
+                ### 🟢 [무료 티어] API 키 발급 방법 (간단)
+                1. [Google AI Studio](https://aistudio.google.com/app/apikey) 접속 후 구글 계정으로 로그인합니다.
+                2. 좌측 상단의 **'Create API key'** 버튼 ➔ 팝업창에서 **'Create API key in new project'** 를 클릭합니다.
+                3. 생성된 `AIzaSy...` 로 시작하는 긴 문자를 복사하여 아래 입력창에 붙여넣으세요.
                 
-                **[🔵 유료 티어 (Pay-as-you-go) 설정 방법]**
-                1. Google Cloud Platform(GCP)에 접속하여 [결제(Billing) 계정](https://console.cloud.google.com/billing)을 등록하고 신용카드를 연동합니다.
-                2. Google AI Studio에서 API 키를 생성할 때, 결제가 연동된 해당 GCP 프로젝트를 선택하여 키를 생성합니다.
+                ---
+                ### 🔵 [유료 티어] API 키 발급 방법 (상세 가이드)
+                **사전 준비물:** 해외 결제가 가능한 신용카드 또는 체크카드 (Visa, Master 등)
+                
+                **1단계: 구글 클라우드(GCP) 결제 계정 등록 및 방(프로젝트) 만들기**
+                1. [Google Cloud Console](https://console.cloud.google.com/) 접속 및 로그인 (약관 동의)
+                2. 상단 메뉴바의 **'프로젝트 선택'** ➔ 우측 상단 **'새 프로젝트(New Project)'** 클릭
+                3. 프로젝트 이름(예: `3GPP-Analyzer`) 작성 후 **'만들기'** 클릭
+                4. 화면 좌측 상단 햄버거 메뉴(☰) ➔ **'결제(Billing)'** ➔ **'결제 계정 연결/추가'** 클릭 후 신용카드 정보 등록
+                *(※ 구글이 정상 카드인지 확인하기 위해 1달러를 가결제 후 즉시 취소할 수 있습니다.)*
+                
+                **2단계: AI Studio에서 유료 프로젝트용 키 생성하기**
+                1. 지갑 연결이 끝났다면 다시 [Google AI Studio](https://aistudio.google.com/app/apikey)로 이동합니다.
+                2. 좌측 상단의 **'Create API key'** 버튼 클릭
+                3. 팝업창에서 바로 파란 버튼을 누르지 말고, ⭐️ **'Search projects' 라고 적힌 돋보기 창을 클릭**하세요!
+                4. 방금 1단계에서 카드를 등록했던 **프로젝트 이름(`3GPP-Analyzer`)을 목록에서 찾아 클릭**합니다.
+                5. 그 아래 활성화된 **'Create API key in existing project'** 버튼을 클릭합니다.
+                6. 생성된 `AIzaSy...` 로 시작하는 키를 복사하여 아래에 입력하세요!
+                
+                **💡 꿀팁 (요금 폭탄 방지):** GCP 메뉴의 '결제' ➔ '예산 및 알림(Budgets & alerts)'에서 월 예산을 10,000원 등으로 설정해두면 마음 편히 사용할 수 있습니다.
                 """)
             
             api_tier_choice = st.radio(
@@ -561,7 +606,6 @@ if page == "🚀 통합 AI 분석기":
 
                         is_free_tier = "무료" in api_tier_choice
                         
-                        # 모델 선택 로직 (무료=Flash 우선, 유료=Pro 우선)
                         if is_free_tier:
                             target_models = [m for m in valid_models if 'flash' in m.lower() and 'vision' not in m.lower()]
                             if not target_models: target_models = [m for m in valid_models if 'pro' in m.lower() and 'vision' not in m.lower()]
@@ -577,7 +621,7 @@ if page == "🚀 통합 AI 분석기":
                         # 분할 및 단계별 병합 (Map-Reduce) 로직 실행 (무료 티어 전용)
                         # ==========================================
                         if is_free_tier:
-                            batch_size = 20 # 20개씩 묶어서 호출 횟수 최소화
+                            batch_size = 20
                             total_docs = len(st.session_state.extracted_data)
                             total_batches = (total_docs + batch_size - 1) // batch_size
                             
@@ -604,7 +648,6 @@ if page == "🚀 통합 AI 분석기":
                                 {batch_text}
                                 """
                                 
-                                # 구글 1분당 한도(RPM) 리셋을 위한 강력한 방어 로직
                                 max_retries = 3
                                 for attempt in range(max_retries):
                                     try:
@@ -615,7 +658,6 @@ if page == "🚀 통합 AI 분석기":
                                     except Exception as e:
                                         if "429" in str(e) or "Quota" in str(e) or "exhausted" in str(e).lower():
                                             if attempt < max_retries - 1:
-                                                # 에러 감지 시 확실하게 60초를 대기하여 구글 서버 리셋 유도
                                                 wait_time = 60
                                                 status_text.text(f"⚠️ 구글 1분 처리 한도 도달! 완전히 리셋하기 위해 {wait_time}초 대기합니다... (시도 {attempt+1}/{max_retries})")
                                                 time.sleep(wait_time)
@@ -626,13 +668,10 @@ if page == "🚀 통합 AI 분석기":
                                 
                                 progress_bar.progress((i+1)/total_batches)
                                 
-                                # 핵심: 다음 그룹으로 넘어가기 전 안전거리 유지 (5초)
-                                # 5초 대기면 1분에 12번 호출이므로 15 RPM 한도에 절대로 걸리지 않음
                                 if i < total_batches - 1:
                                     status_text.text(f"⏳ 속도 위반 방지를 위해 5초 대기 중... ({i+1}/{total_batches} 완료)")
                                     time.sleep(5)
                                     
-                            # 최종 병합 (Reduce)
                             status_text.text("🧠 모든 그룹 분석 완료! 최종 결과물로 병합하는 중입니다...")
                             final_input = "\n\n=== 그룹별 1차 요약본 모음 ===\n\n".join(intermediate_summaries)
                             
@@ -681,7 +720,7 @@ if page == "🚀 통합 AI 분석기":
                                 """
                                 response = model.generate_content(prompt)
 
-                        # 파일 생성 및 다운로드 처리 (무료/유료 공통)
+                        # 파일 생성 및 데이터를 세션 메모리에 보존
                         if response and response.text:
                             r = Document()
                             r.add_heading(f"AI 정밀 분석 요약 ({model_display_name})", 0)
@@ -695,20 +734,13 @@ if page == "🚀 통합 AI 분석기":
                             
                             bio_llm = io.BytesIO()
                             r.save(bio_llm)
-                            bio_llm.seek(0)
                             
-                            st.success("✅ AI 정밀 요약 파일이 성공적으로 생성되었습니다!")
+                            # 분석 결과를 영구 보존용 세션 금고에 저장
+                            st.session_state.ai_summary_bytes = bio_llm.getvalue()
+                            st.session_state.ai_summary_text = response.text
+                            st.session_state.ai_model_name = model_display_name
+                            st.session_state.ai_summary_generated = True
                             
-                            st.download_button(
-                                label="📥 AI 요약본(Output 3) 최종 다운로드 (.docx)",
-                                data=bio_llm,
-                                file_name="Output3_AI_Summary.docx",
-                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                                type="primary"
-                            )
-                            
-                            with st.expander("👀 생성된 AI 요약 결과 미리보기", expanded=True):
-                                st.markdown(response.text)
                         else:
                             st.error("AI 응답을 받아오지 못했습니다. 잠시 후 다시 시도해주세요.")
                                 
@@ -718,6 +750,22 @@ if page == "🚀 통합 AI 분석기":
                             st.error("❌ **[API 용량 초과 안내]** 무료 일일 제공량을 완전히 소진했거나 텍스트가 너무 방대합니다. 왼쪽 탭의 **[📘 구글 NotebookLM 사용하기]**를 이용해 주세요.")
                         else:
                             st.error(f"❌ API 호출 중 오류가 발생했습니다. 키가 정확한지 확인해주세요.\n\n[상세 오류 메시지]: {e}")
+
+            # ==========================================
+            # UI 분리: 버튼 블록 밖에서 다운로드 UI 표출 (새로고침 방어)
+            # ==========================================
+            if st.session_state.ai_summary_generated:
+                st.success("✅ AI 정밀 요약 파일이 성공적으로 생성되었습니다!")
+                st.download_button(
+                    label=f"📥 AI 요약본(Output 3) 최종 다운로드 (.docx)",
+                    data=st.session_state.ai_summary_bytes,
+                    file_name="Output3_AI_Summary.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    type="primary"
+                )
+                
+                with st.expander("👀 생성된 AI 요약 결과 미리보기", expanded=True):
+                    st.markdown(st.session_state.ai_summary_text)
 
 # --- 페이지 2: 3GPP FTP 탐색기 ---
 elif page == "📁 3GPP FTP 탐색기":
@@ -759,10 +807,20 @@ elif page == "ℹ️ 소개 및 가이드":
     3. **'🚀 기본 분석 실행 (Run)'** 버튼을 누르면, 프로그램이 자동으로 각 문서의 Conclusion(결론) 부분만 쏙쏙 뽑아냅니다.
     """)
     
-    st.markdown("### 3단계: AI 정밀 분석으로 요약본 만들기 (NotebookLM 권장)")
+    st.markdown("### 3단계: AI 정밀 분석으로 요약본 만들기 (NotebookLM 강력 추천 🌟)")
     st.write("""
-    * **방법 A (권장):** 3단계 화면에서 `NotebookLM 전용 텍스트 파일(.txt)`을 다운로드한 후, 구글 NotebookLM 사이트에 업로드하여 사용하세요. 속도 제한 없이 가장 안전하게 분석할 수 있습니다.
-    * **방법 B (내장 API):** 구글 AI Studio에서 API 키를 발급받아 화면에 입력합니다. 본인의 API 티어(무료/유료)에 맞게 옵션을 선택하면 AI가 알아서 알맞은 데이터양을 조절하여 요약해 줍니다.
+    가장 추천하는 방법은 구글이 제공하는 무료 문서 분석 특화 AI인 **[NotebookLM](https://notebooklm.google.com/)**을 활용하는 것입니다.
+    
+    **[NotebookLM 100% 활용 가이드]**
+    * **환각(Hallucination) 제로:** 일반 챗봇과 달리, 오직 내가 업로드한 문서(소스)에서만 정답을 찾기 때문에 없는 회사나 제안을 지어내지 않습니다.
+    * **엄청난 무료 용량:** 노트북 1개당 최대 **50개의 문서**, 각 문서당 최대 **50만 단어**까지 완전 무료로 업로드할 수 있어 토큰 제한(429 에러) 걱정이 없습니다.
+    * **투명한 출처 표기:** 요약본 뒤에 인용구(Citation) 번호가 달려서, 원문의 어떤 부분에서 해당 내용이 발췌되었는지 클릭 한 번으로 검증할 수 있습니다.
+    
+    **[사용 방법]**
+    1. 본 프로그램의 3단계 화면에서 **`NotebookLM 전용 텍스트 파일(.txt)`**을 다운로드합니다.
+    2. [NotebookLM 공식 웹사이트](https://notebooklm.google.com/)에 접속하여 로그인합니다.
+    3. **'새 노트북(New Notebook)'**을 만들고 좌측의 소스 추가 메뉴에 방금 다운로드한 텍스트 파일을 끌어다 놓습니다.
+    4. 채팅창에 프로그램에서 안내된 **추천 프롬프트**를 복사해서 붙여넣고 요약을 지시하면 완벽하게 정리된 결과물을 얻을 수 있습니다.
     """)
     
     st.markdown("---")
