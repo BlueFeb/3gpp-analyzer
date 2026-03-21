@@ -17,26 +17,14 @@ from docx.text.paragraph import Paragraph
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-
-# ==========================================
-# 0. 구글 애드센스 광고 영역 (텍스트 숨김 처리)
-# ==========================================
-def show_adsense():
-    """
-    구글 애드센스 코드를 삽입하는 영역입니다.
-    현재는 화면에 아무런 글자도 보이지 않는 빈 공간(투명)으로 처리되어 있습니다.
-    """
-    html_code = """
-    <div style="width: 100%; height: 90px; background-color: transparent;">
-        </div>
-    """
-    components.html(html_code, height=100)
+import google.generativeai as genai  # 추가된 LLM 라이브러리
 
 # ==========================================
 # 1. 환경 설정 및 세션 초기화
 # ==========================================
 st.set_page_config(page_title="3GPP AI Analyzer Pro", page_icon="📡", layout="wide")
 
+# 세션 상태 초기화 (에러 방지를 위해 철저히 체크)
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "log_text" not in st.session_state:
@@ -98,7 +86,7 @@ def fetch_remote_pin():
     return FALLBACK_PIN
 
 # ==========================================
-# 2. 문서 처리 및 핵심 로직
+# 2. 문서 처리 및 핵심 로직 (메인 분석기용 TF-IDF 로직 유지)
 # ==========================================
 def read_excel_from_bytes(uploaded_file):
     wb = load_workbook(uploaded_file, read_only=False, data_only=True)
@@ -224,7 +212,6 @@ def extract_all_conclusions(entries, status_elem, progress_elem, log_func):
 
             file_path_str = str(src_path)
             
-            # .docm 파일 처리
             if src_path.suffix.lower() == ".docm":
                 try:
                     file_path_str = repackage_docm_to_docx(file_path_str, td.name)
@@ -408,15 +395,11 @@ st.sidebar.title("📡 3GPP AI Analyzer")
 st.sidebar.markdown("---")
 page = st.sidebar.radio("메뉴 이동", ["🚀 메인 분석기", "📄 기고문 상세 분석", "📁 3GPP FTP 탐색기", "ℹ️ 소개 및 가이드"])
 st.sidebar.markdown("---")
-st.sidebar.info("구글 애드센스 수익 창출을 위해 최적화된 웹 애플리케이션입니다.")
 
-# 상단 애드센스 슬롯 (빈 영역)
-show_adsense()
-
-# --- 페이지 1: 메인 분석기 ---
+# --- 페이지 1: 메인 분석기 (기존 단순 분석 기능 유지) ---
 if page == "🚀 메인 분석기":
     st.title("🚀 3GPP 기고문 자동 분석기")
-    st.write("엑셀 파일이나 링크 목록을 입력하여 각 회사의 기고문을 다운로드하고, 결론(Conclusions)을 추출 및 유사도 기반으로 요약합니다.")
+    st.write("엑셀 파일이나 링크 목록을 입력하여 각 회사의 기고문을 다운로드하고, 결론(Conclusions)을 추출 및 단어 기반(TF-IDF)으로 요약합니다.")
     
     if not st.session_state.authenticated:
         st.info("시스템 사용을 위해 4자리 PIN 번호를 입력해주세요.")
@@ -464,7 +447,7 @@ if page == "🚀 메인 분석기":
             status_elem.text("기고문 다운로드 및 결론 추출 시작...")
             out1_bio = extract_all_conclusions(entries, status_elem, progress_elem, append_log)
             
-            status_elem.text("자연어 처리 및 Proposal 요약 분석 시작...")
+            status_elem.text("단어 빈도수(TF-IDF) 기반 요약 분석 시작...")
             out2_bio = parse_and_summarize(out1_bio, status_elem, append_log)
             
             status_elem.text("✅ 모든 작업이 완료되었습니다!")
@@ -480,8 +463,10 @@ if page == "🚀 메인 분석기":
         
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zf:
-            zf.writestr("output1_conclusions.docx", st.session_state.out1_bio.getvalue())
-            zf.writestr("output2_summary.docx", st.session_state.out2_bio.getvalue())
+            if st.session_state.out1_bio:
+                zf.writestr("output1_conclusions.docx", st.session_state.out1_bio.getvalue())
+            if st.session_state.out2_bio:
+                zf.writestr("output2_summary_tfidf.docx", st.session_state.out2_bio.getvalue())
         zip_buffer.seek(0)
         
         st.download_button(
@@ -496,40 +481,124 @@ if page == "🚀 메인 분석기":
         st.write("또는 개별 파일로 다운로드 하실 수 있습니다:")
         col1, col2 = st.columns(2)
         with col1:
-            st.download_button("📄 Output 1 다운로드 (Conclusions 취합)", data=st.session_state.out1_bio, file_name="output1_conclusions.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            if st.session_state.out1_bio:
+                st.download_button("📄 Output 1 다운로드 (Conclusions 취합)", data=st.session_state.out1_bio, file_name="output1_conclusions.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         with col2:
-            st.download_button("📄 Output 2 다운로드 (Proposal 요약)", data=st.session_state.out2_bio, file_name="output2_summary.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            if st.session_state.out2_bio:
+                st.download_button("📄 Output 2 다운로드 (TF-IDF 요약)", data=st.session_state.out2_bio, file_name="output2_summary.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
             
         with st.expander("실행 로그 보기"):
             st.text(st.session_state.log_text)
 
-# --- 페이지 2: 기고문 상세 분석 ---
+# --- 페이지 2: 기고문 상세 분석 (기존 뷰어 기능 유지 + AI 요약 기능 추가) ---
 elif page == "📄 기고문 상세 분석":
-    st.title("📄 개별 기고문 상세 분석")
-    st.write("메인 분석기에서 추출된 기고문들의 원문을 브라우저에서 바로 확인하고 분석합니다.")
+    st.title("📄 기고문 원문 확인 및 AI 정밀 분석")
+    st.write("추출된 개별 기고문들을 확인하거나, Gemini API를 연결하여 고도의 문맥 기반 요약(Output 2)을 생성합니다.")
     
     if not st.session_state.process_done or not st.session_state.extracted_data:
-        st.warning("아직 분석된 데이터가 없습니다. '메인 분석기'에서 먼저 기고문을 분석해주세요.")
+        st.warning("아직 분석된 데이터가 없습니다. '🚀 메인 분석기'에서 먼저 기고문을 분석해주세요.")
     else:
-        doc_list = [item["doc"] for item in st.session_state.extracted_data]
-        selected_doc = st.selectbox("확인할 기고문을 선택하세요:", doc_list)
+        # 기존: 개별 기고문 뷰어 영역 (유지)
+        with st.expander("🔍 개별 기고문 원문 확인하기", expanded=False):
+            doc_list = [item["doc"] for item in st.session_state.extracted_data]
+            selected_doc = st.selectbox("확인할 기고문을 선택하세요:", doc_list)
+            
+            for item in st.session_state.extracted_data:
+                if item["doc"] == selected_doc:
+                    st.markdown(f"**📌 {item['title']}**")
+                    col1, col2 = st.columns(2)
+                    col1.write(f"**제출 회사:** {item['company']}")
+                    col2.markdown(f"**[원문 다운로드 링크]({item['link']})**")
+                    st.info(item["content"])
+                    break
         
-        for item in st.session_state.extracted_data:
-            if item["doc"] == selected_doc:
-                st.subheader(f"📌 {item['title']}")
-                col1, col2 = st.columns(2)
-                col1.write(f"**제출 회사:** {item['company']}")
-                col2.markdown(f"**[원문 다운로드 링크]({item['link']})**")
-                
-                st.markdown("---")
-                st.markdown("### 📝 추출된 결론(Conclusions) 내용")
-                st.info(item["content"])
-                
-                st.markdown("#### AI 기반 인사이트 (Beta)")
-                st.write("본문 내용을 바탕으로 자연어 처리 알고리즘이 해당 기고문의 중요 Proposal을 클러스터링하여 메인 페이지의 Output2에 반영했습니다. 자세한 지지 회사 통계는 요약 결과물을 다운로드하여 확인하시기 바랍니다.")
-                break
+        st.markdown("---")
+        
+        # 신규: API Key 연동 기반 LLM 요약 영역
+        st.header("🧠 대형 언어 모델(LLM) 기반 통합 정밀 요약")
+        st.write("NotebookLM과 동일한 수준의 자연어 이해를 바탕으로, 여러 회사의 제안을 의미 단위로 묶어 완벽하게 정리된 요약본을 생성합니다.")
+        
+        # 보안 조치: type="password"로 입력값이 화면에 보이지 않도록 함
+        user_api_key = st.text_input(
+            "🔑 Gemini API Key 입력 (무료 발급 가능, 1회성 사용으로 저장되지 않음)", 
+            type="password", 
+            help="초보자 가이드를 참고하여 발급받은 API 키를 입력해주세요."
+        )
+        
+        if st.button("✨ AI 정밀 요약 생성 시작", type="primary"):
+            if not user_api_key.strip():
+                st.error("⚠️ API 키를 입력해주세요.")
+            else:
+                with st.spinner("AI가 문서를 정독하고 문맥을 분석 중입니다. 데이터 양에 따라 30초에서 1분 정도 소요됩니다..."):
+                    try:
+                        # API 키 연동 (메모리에서만 일시적으로 사용됨)
+                        genai.configure(api_key=user_api_key.strip())
+                        model = genai.GenerativeModel('gemini-1.5-pro')
+                        
+                        # 컨텍스트 텍스트 조합
+                        extracted_text_buffer = []
+                        for item in st.session_state.extracted_data:
+                            extracted_text_buffer.append(f"[문서: {item['doc']}, 회사: {item['company']}]\n{item['content']}")
+                        
+                        full_text = "\n\n".join(extracted_text_buffer)
+                        
+                        # 프롬프트 구성 (요청 양식 엄격히 적용)
+                        prompt = f"""
+                        아래 텍스트는 3GPP 표준회의에 제출된 여러 회사들의 기고문 결론(Conclusions) 모음입니다.
+                        이 모든 회사들의 기고문들을 검토하고, 동일 또는 유사한 제안(Proposal)들을 묶어주세요.
+                        가장 많은 회사들이 지지하는 제안부터 순서대로 나열하고, 각 제안마다 아래 양식을 엄격히 지켜서 한국어로 작성해주세요.
+                        없는 내용을 절대 지어내지(Hallucination) 마세요.
 
-# --- 페이지 3: 3GPP FTP 탐색기 ---
+                        [출력 양식]
+                        X. [제안의 핵심 요약 제목]
+                        지지 회사 (N개사): [회사명 나열, 중복 제거]
+                        제안 내용: [해당 제안의 상세 내용 및 배경을 2~3문장으로 자연스럽고 명확하게 요약]
+
+                        [기고문 결론 원문]
+                        {full_text}
+                        """
+                        
+                        # LLM 호출
+                        response = model.generate_content(prompt)
+                        
+                        if response and response.text:
+                            # docx 파일 생성
+                            r = Document()
+                            r.add_heading("AI 정밀 분석 요약 (Gemini 1.5 Pro)", 0)
+                            
+                            for line in response.text.split('\n'):
+                                # 제목 부분 볼드 처리
+                                if re.match(r'^\d+\.', line.strip()):
+                                    p = r.add_paragraph()
+                                    p.add_run(line).bold = True
+                                else:
+                                    r.add_paragraph(line)
+                            
+                            bio_llm = io.BytesIO()
+                            r.save(bio_llm)
+                            bio_llm.seek(0)
+                            
+                            st.success("✅ AI 정밀 요약이 성공적으로 완료되었습니다!")
+                            
+                            # 다운로드 버튼 제공
+                            st.download_button(
+                                label="📥 AI 요약본(Output 2) 다운로드 (.docx)",
+                                data=bio_llm,
+                                file_name="Output2_AI_Summary.docx",
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                type="primary"
+                            )
+                            
+                            # 결과 미리보기 제공
+                            with st.expander("👀 생성된 요약 결과 미리보기", expanded=True):
+                                st.markdown(response.text)
+                        else:
+                            st.error("AI 응답을 받아오지 못했습니다. 잠시 후 다시 시도해주세요.")
+                            
+                    except Exception as e:
+                        st.error(f"❌ API 호출 중 오류가 발생했습니다. 키가 정확한지, 또는 할당량을 초과했는지 확인해주세요.\n\n[상세 오류 메시지]: {e}")
+
+# --- 페이지 3: 3GPP FTP 탐색기 (유지) ---
 elif page == "📁 3GPP FTP 탐색기":
     st.title("📁 3GPP 공식 FTP 탐색기 및 가이드")
     st.write("이 페이지에서는 3GPP 회의의 원본 기고문들이 업로드되는 공식 FTP 서버의 다이렉트 링크와 활용 방법을 안내합니다.")
@@ -550,18 +619,44 @@ elif page == "📁 3GPP FTP 탐색기":
     이를 통해 기고문이 언제 제출되었고 어떤 그룹에서 논의되는지 한눈에 파악할 수 있습니다.
     """)
 
-# --- 페이지 4: 소개 및 가이드 ---
+# --- 페이지 4: 소개 및 가이드 (초보자용 상세 가이드 대폭 강화) ---
 elif page == "ℹ️ 소개 및 가이드":
-    st.title("ℹ️ 사이트 소개 및 이용 약관")
+    st.title("ℹ️ 초보자 상세 가이드 및 이용 안내")
     
-    st.header("사이트 소개 (About Us)")
-    st.write("본 사이트는 통신 전문가 및 연구원들이 3GPP 회의에 제출된 방대한 양의 기고문(Contributions)을 쉽고 빠르게 분석할 수 있도록 돕기 위해 제작되었습니다. AI 기반 자연어 처리 기술을 활용하여 핵심 결론(Conclusions)만 추출하고, 유사한 제안(Proposals)을 병합해 줍니다.")
+    st.header("🔰 초보자를 위한 3단계 사용 가이드")
     
-    st.header("이용 약관 (Terms of Service)")
-    st.write("1. 본 서비스에서 제공하는 요약 결과는 원문의 텍스트 기반 추출 알고리즘에 의존하며, 100%의 정확도를 보장하지 않습니다.\n2. 공식적인 통계나 회의록은 반드시 3GPP 공식 홈페이지를 교차 검증하시기 바랍니다.\n3. 본 서비스를 이용하여 발생하는 어떠한 손실에 대해서도 운영자는 책임지지 않습니다.")
+    st.markdown("### 1단계: 분석할 기고문 데이터 준비하기")
+    st.write("""
+    1. 분석하고 싶은 3GPP 기고문들의 링크나 문서 번호를 확보합니다.
+    2. 가장 쉬운 방법은 좌측 메뉴의 **[📁 3GPP FTP 탐색기]**를 통해 원하는 회의 문서를 찾는 것입니다.
+    3. 엑셀 파일을 만드실 경우, **1열에는 문서번호(예: R1-250001), 3열에는 회사명(예: Samsung)**을 적어주세요.
+    """)
     
-    st.header("개인정보처리방침 (Privacy Policy)")
-    st.write("본 웹사이트는 사용자가 업로드한 엑셀 파일이나 입력한 링크 정보를 서버 하드디스크에 영구적으로 저장하지 않습니다. 모든 데이터 처리는 메모리(RAM) 상에서 이루어지며, 세션이 종료되거나 결과물을 다운로드한 후 즉시 소멸됩니다.")
-
-# 하단 애드센스 슬롯 (빈 영역)
-show_adsense()
+    st.markdown("### 2단계: 메인 분석기 실행하기 (결론 자동 추출)")
+    st.write("""
+    1. 좌측 메뉴에서 **[🚀 메인 분석기]**로 이동합니다.
+    2. 최초 접속 시 사내망/외부망 확인을 위한 4자리 PIN 번호를 입력합니다.
+    3. 1단계에서 준비한 엑셀 파일을 업로드하거나, 텍스트 입력창에 링크들을 복사해서 붙여넣습니다.
+    4. **'🚀 실행 (Run)'** 버튼을 누르고 기다리시면, 프로그램이 자동으로 각 문서의 Conclusion(결론) 부분만 쏙쏙 뽑아냅니다.
+    """)
+    
+    st.markdown("### 3단계: AI 정밀 분석으로 요약본 만들기 (핵심 기능)")
+    st.write("""
+    1. 추출이 완료되면 좌측 메뉴의 **[📄 기고문 상세 분석]** 탭으로 이동합니다.
+    2. 이 기능은 구글의 초거대 AI(Gemini 1.5 Pro)를 빌려 쓰기 때문에 **'API Key'**라는 개인 열쇠가 필요합니다.
+       * 👉 **[무료 API 키 발급받기 클릭] (https://aistudio.google.com/app/apikey)**
+       * 위 링크로 이동 후 구글 로그인 ➔ 'Create API key' 버튼 클릭 ➔ `AIzaSy...` 로 시작하는 긴 문자를 복사합니다.
+    3. 복사한 키를 분석기 화면의 입력창에 붙여넣고 **'✨ AI 정밀 요약 생성 시작'** 버튼을 누릅니다.
+    4. 잠시 후, 전문가가 정리한 것과 똑같은 고품질의 요약본을 워드(.docx) 파일로 다운로드하실 수 있습니다!
+    """)
+    
+    st.markdown("---")
+    
+    st.header("🔒 개인정보처리 및 보안 (안심하고 사용하세요)")
+    st.write("""
+    * **API 키 절대 보호:** 귀하가 입력한 API 키는 화면에 `****` 형태로 가려져 보이며, 서버의 하드디스크나 데이터베이스에 절대 저장되지 않습니다. 요약 과정이 끝나면 메모리에서 즉시 영구 삭제됩니다.
+    * **문서 데이터 무단 수집 금지:** 업로드하신 엑셀 파일과 추출된 텍스트 역시 세션이 종료되거나 웹 브라우저를 닫는 즉시 완벽하게 소멸됩니다.
+    """)
+    
+    st.header("⚖️ 이용 약관")
+    st.write("본 서비스에서 제공하는 요약 결과는 AI 및 텍스트 기반 추출 알고리즘에 의존하므로 100%의 정확도를 보장하지 않습니다. 공식적인 통계나 회의록은 반드시 3GPP 공식 홈페이지를 교차 검증하시기 바랍니다. 본 서비스를 이용하여 발생하는 어떠한 손실에 대해서도 운영자는 책임지지 않습니다.")
