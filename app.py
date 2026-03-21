@@ -36,6 +36,8 @@ if "out2_bio" not in st.session_state:
     st.session_state.out2_bio = None
 if "extracted_data" not in st.session_state:
     st.session_state.extracted_data = []
+if "notebooklm_txt" not in st.session_state:
+    st.session_state.notebooklm_txt = None
 
 def append_log(text):
     st.session_state.log_text += f"{text}\n"
@@ -184,6 +186,7 @@ def extract_all_conclusions(entries, status_elem, progress_elem, log_func):
     for idx, (e, fp, err) in enumerate(download_results, start=1):
         status_elem.text(f"Extracting [{idx}/{total}]: {e['doc']}")
         doc_text_buffer = []
+        full_text_buffer = [] # 유료 티어 분석을 위한 전체 텍스트 버퍼 추가
 
         tbl = od.add_table(rows=4, cols=2, style="Table Grid")
         tbl.cell(0, 0).text, tbl.cell(0, 1).text = "Document", e["doc"]
@@ -225,16 +228,20 @@ def extract_all_conclusions(entries, status_elem, progress_elem, log_func):
                 continue
                 
             title = ""
-            for p in sd.paragraphs:
+            paras = sd.paragraphs
+            
+            # 모든 문단의 텍스트를 full_text_buffer에 담음 (유료 티어용)
+            for p in paras:
                 t = p.text.strip()
-                if t.lower().startswith("title:"):
+                if t:
+                    full_text_buffer.append(t)
+                if not title and t.lower().startswith("title:"):
                     title = t.split(":", 1)[1].strip()
-                    break
+                    
             if not title:
                 title = sd.core_properties.title or ""
             tbl.cell(3, 1).text = title
 
-            paras = sd.paragraphs
             start = None
             for pat in cps:
                 for j, p in enumerate(paras):
@@ -259,9 +266,12 @@ def extract_all_conclusions(entries, status_elem, progress_elem, log_func):
                     doc_text_buffer.append(paras[j].text)
                 log_func(f"{e['doc']} 추출 완료")
 
+            # extracted_list에 content(결론)와 full_content(원문 전체)를 모두 저장
             extracted_list.append({
                 "doc": e["doc"], "company": e["company"], "link": e["link"], 
-                "title": title, "content": "\n".join(doc_text_buffer) if doc_text_buffer else "Conclusion 섹션을 찾지 못했습니다."
+                "title": title, 
+                "content": "\n".join(doc_text_buffer) if doc_text_buffer else "Conclusion 섹션을 찾지 못했습니다.",
+                "full_content": "\n".join(full_text_buffer) if full_text_buffer else "원문 텍스트를 추출하지 못했습니다."
             })
 
         except Exception as ex:
@@ -272,6 +282,17 @@ def extract_all_conclusions(entries, status_elem, progress_elem, log_func):
             od.add_page_break()
 
     st.session_state.extracted_data = extracted_list
+    
+    txt_buffer = []
+    txt_buffer.append("=== 3GPP Contributions Conclusions ===")
+    for item in extracted_list:
+        txt_buffer.append(f"\n\n--- Document: {item['doc']} ---")
+        txt_buffer.append(f"Company: {item['company']}")
+        txt_buffer.append(f"Title: {item['title']}")
+        txt_buffer.append("Content:")
+        txt_buffer.append(item['content'])
+    st.session_state.notebooklm_txt = "\n".join(txt_buffer)
+
     bio = io.BytesIO()
     od.save(bio)
     bio.seek(0)
@@ -472,120 +493,146 @@ if page == "🚀 통합 AI 분석기":
         col1, col2 = st.columns(2)
         with col1:
             if st.session_state.out1_bio:
-                st.download_button("📥 Output 1 다운로드 (Conclusions 취합)", data=st.session_state.out1_bio, file_name="output1_conclusions.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                st.download_button("📥 Output 1 다운로드 (Conclusions 취합.docx)", data=st.session_state.out1_bio, file_name="output1_conclusions.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         with col2:
             if st.session_state.out2_bio:
-                st.download_button("📥 Output 2 다운로드 (TF-IDF 요약)", data=st.session_state.out2_bio, file_name="output2_summary_tfidf.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                st.download_button("📥 Output 2 다운로드 (TF-IDF 요약.docx)", data=st.session_state.out2_bio, file_name="output2_summary_tfidf.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         
         # ------------------------------------
-        # 단계 3: AI 정밀 요약 (미래 버전 완벽 대응)
+        # 단계 3: NotebookLM 내보내기 & AI 정밀 요약
         # ------------------------------------
         st.markdown("---")
-        st.header("3️⃣ 단계: AI 정밀 분석 및 요약 (Gemini LLM)")
+        st.header("3️⃣ 단계: AI 정밀 분석 및 요약")
         st.write("추출된 결론을 바탕으로 여러 회사의 유사 제안을 문맥 단위로 묶어 완벽한 요약본을 생성합니다.")
         
-        user_api_key = st.text_input(
-            "🔑 Gemini API Key 입력 (무료 발급, 1회성 사용으로 안전함)", 
-            type="password", 
-            help="초보자 가이드를 참고하여 발급받은 API 키를 입력해주세요."
-        )
+        tab1, tab2 = st.tabs(["📘 구글 NotebookLM 사용하기 (권장)", "⚡ 내장 Gemini API로 요약하기"])
         
-        if st.button("✨ AI 정밀 요약 생성 시작", type="primary"):
-            if not user_api_key.strip():
-                st.error("⚠️ 상단에 발급받은 API 키를 입력해주세요.")
-            else:
-                with st.spinner("AI가 문서를 정독하고 문맥을 분석 중입니다. (데이터 양에 따라 30초~1분 소요)"):
-                    try:
-                        # API 키 연동
-                        genai.configure(api_key=user_api_key.strip())
-                        
-                        # --- 핵심 업데이트: 사용 가능한 최적의 모델 동적 탐색 ---
-                        valid_models = []
-                        for m in genai.list_models():
-                            if 'generateContent' in m.supported_generation_methods:
-                                valid_models.append(m.name)
+        with tab1:
+            st.info("💡 **가장 안정적인 방법입니다.** NotebookLM은 텍스트(.txt) 파일을 가장 빠르고 정확하게 처리합니다. 아래 버튼을 눌러 통합 텍스트 파일을 받고 NotebookLM에 바로 업로드하세요.")
+            
+            if st.session_state.notebooklm_txt:
+                st.download_button(
+                    label="📝 NotebookLM 전용 텍스트 파일(.txt) 다운로드",
+                    data=st.session_state.notebooklm_txt.encode('utf-8'),
+                    file_name="NotebookLM_Input_Conclusions.txt",
+                    mime="text/plain",
+                    type="primary"
+                )
+                
+            st.markdown("#### 📋 NotebookLM 프롬프트 가이드")
+            st.write("파일을 업로드한 후, 아래의 텍스트를 복사하여 NotebookLM 대화창에 붙여넣으세요.")
+            st.code("이 모든 회사들의 기고문들을 검토하고, 회사들이 지지하는 동일 또는 유사한 제안 (Proposal)들을, 가장 많은 회사들이 지지하는 제안 부터 2개 이상의 회사가 지지하는 제안들만 찾아서 나열 해줄래?", language="text")
+
+        with tab2:
+            st.write("보유하신 구글 Gemini API 키의 등급에 따라 분석 수준을 선택해 주세요.")
+            
+            # --- API 요금제 선택 라디오 버튼 ---
+            api_tier_choice = st.radio(
+                "API 요금제(Tier) 선택:",
+                ("🟢 무료 티어 (결론 부분만 요약 - 에러 방지용)", "🔵 유료 티어 (기고문 전체 원문을 업로드하여 초정밀 분석 - 고용량 토큰 소모)"),
+                help="무료 API 사용자는 첫 번째를 선택해야 토큰 초과 에러(429)를 방지할 수 있습니다."
+            )
+            
+            user_api_key = st.text_input(
+                "🔑 Gemini API Key 입력 (1회성 사용으로 안전함)", 
+                type="password", 
+                help="초보자 가이드를 참고하여 발급받은 API 키를 입력해주세요."
+            )
+            
+            if st.button("✨ 내장 AI 정밀 요약 생성 시작"):
+                if not user_api_key.strip():
+                    st.error("⚠️ 상단에 발급받은 API 키를 입력해주세요.")
+                else:
+                    with st.spinner("AI가 문서를 정독하고 문맥을 분석 중입니다. (데이터 양에 따라 30초~1분 이상 소요)"):
+                        try:
+                            genai.configure(api_key=user_api_key.strip())
+                            
+                            valid_models = []
+                            for m in genai.list_models():
+                                if 'generateContent' in m.supported_generation_methods:
+                                    valid_models.append(m.name)
+                                    
+                            if not valid_models:
+                                raise Exception("현재 사용 가능한 텍스트 생성 모델이 구글 서버에 없습니다. API 키를 다시 확인해주세요.")
+
+                            pro_models = [m for m in valid_models if 'pro' in m.lower() and 'vision' not in m.lower()]
+                            
+                            if pro_models:
+                                latest_pros = [m for m in pro_models if 'latest' in m.lower()]
+                                target_model_name = latest_pros[0] if latest_pros else pro_models[-1]
+                            else:
+                                target_model_name = valid_models[-1]
                                 
-                        if not valid_models:
-                            raise Exception("현재 사용 가능한 텍스트 생성 모델이 구글 서버에 없습니다. API 키를 다시 확인해주세요.")
+                            model_display_name = target_model_name.split('/')[-1]
+                            st.info(f"💡 자동 인식된 최신 AI 모델(`{model_display_name}`)을 적용하여 요약합니다.")
+                            
+                            model = genai.GenerativeModel(target_model_name)
+                            
+                            # --- 사용자 선택에 따른 프롬프트 입력 데이터 동적 변경 ---
+                            extracted_text_buffer = []
+                            is_free_tier = "무료" in api_tier_choice
+                            
+                            for item in st.session_state.extracted_data:
+                                # 무료 티어는 Conclusion만, 유료 티어는 Full Text를 사용
+                                target_text = item['content'] if is_free_tier else item['full_content']
+                                extracted_text_buffer.append(f"[문서: {item['doc']}, 회사: {item['company']}]\n{target_text}")
+                            
+                            full_text = "\n\n".join(extracted_text_buffer)
+                            # ------------------------------------------------------------
+                            
+                            prompt = f"""
+                            아래 텍스트는 3GPP 표준회의에 제출된 여러 회사들의 기고문 모음입니다.
+                            이 모든 회사들의 기고문들을 검토하고, 동일 또는 유사한 제안(Proposal)들을 묶어주세요.
+                            가장 많은 회사들이 지지하는 제안부터 순서대로 나열하고, 각 제안마다 아래 양식을 엄격히 지켜서 한국어로 작성해주세요.
+                            없는 내용을 절대 지어내지(Hallucination) 마세요.
 
-                        # 'pro'가 포함된 텍스트 전용 모델을 최우선으로 찾기 (비전 전용 제외)
-                        pro_models = [m for m in valid_models if 'pro' in m.lower() and 'vision' not in m.lower()]
-                        
-                        if pro_models:
-                            # 'latest' 태그가 있으면 가장 최신 버전이므로 최우선 선택
-                            latest_pros = [m for m in pro_models if 'latest' in m.lower()]
-                            target_model_name = latest_pros[0] if latest_pros else pro_models[-1]
-                        else:
-                            # pro 모델이 아예 없다면 사용 가능한 목록 중 마지막 모델 선택
-                            target_model_name = valid_models[-1]
-                            
-                        # 사용자에게 안내
-                        model_display_name = target_model_name.split('/')[-1]
-                        st.info(f"💡 구글 서버에서 자동 인식된 최신 AI 모델(`{model_display_name}`)을 적용하여 요약합니다.")
-                        
-                        model = genai.GenerativeModel(target_model_name)
-                        # --------------------------------------------------------
-                        
-                        # 컨텍스트 텍스트 조합
-                        extracted_text_buffer = []
-                        for item in st.session_state.extracted_data:
-                            extracted_text_buffer.append(f"[문서: {item['doc']}, 회사: {item['company']}]\n{item['content']}")
-                        
-                        full_text = "\n\n".join(extracted_text_buffer)
-                        
-                        # 프롬프트 구성
-                        prompt = f"""
-                        아래 텍스트는 3GPP 표준회의에 제출된 여러 회사들의 기고문 결론(Conclusions) 모음입니다.
-                        이 모든 회사들의 기고문들을 검토하고, 동일 또는 유사한 제안(Proposal)들을 묶어주세요.
-                        가장 많은 회사들이 지지하는 제안부터 순서대로 나열하고, 각 제안마다 아래 양식을 엄격히 지켜서 한국어로 작성해주세요.
-                        없는 내용을 절대 지어내지(Hallucination) 마세요.
+                            [출력 양식]
+                            X. [제안의 핵심 요약 제목]
+                            지지 회사 (N개사): [회사명 나열, 중복 제거]
+                            제안 내용: [해당 제안의 상세 내용 및 배경을 2~3문장으로 자연스럽고 명확하게 요약]
 
-                        [출력 양식]
-                        X. [제안의 핵심 요약 제목]
-                        지지 회사 (N개사): [회사명 나열, 중복 제거]
-                        제안 내용: [해당 제안의 상세 내용 및 배경을 2~3문장으로 자연스럽고 명확하게 요약]
-
-                        [기고문 결론 원문]
-                        {full_text}
-                        """
-                        
-                        # LLM 호출
-                        response = model.generate_content(prompt)
-                        
-                        if response and response.text:
-                            # docx 파일 생성
-                            r = Document()
-                            r.add_heading(f"AI 정밀 분석 요약 ({model_display_name})", 0)
+                            [기고문 원문 데이터]
+                            {full_text}
+                            """
                             
-                            for line in response.text.split('\n'):
-                                if re.match(r'^\d+\.', line.strip()):
-                                    p = r.add_paragraph()
-                                    p.add_run(line).bold = True
-                                else:
-                                    r.add_paragraph(line)
+                            response = model.generate_content(prompt)
                             
-                            bio_llm = io.BytesIO()
-                            r.save(bio_llm)
-                            bio_llm.seek(0)
-                            
-                            st.success("✅ AI 정밀 요약이 성공적으로 완료되었습니다!")
-                            
-                            # 다운로드 버튼 제공
-                            st.download_button(
-                                label="📥 AI 요약본(Output 3) 최종 다운로드 (.docx)",
-                                data=bio_llm,
-                                file_name="Output3_AI_Summary.docx",
-                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                                type="primary"
-                            )
-                            
-                            with st.expander("👀 생성된 AI 요약 결과 미리보기", expanded=True):
-                                st.markdown(response.text)
-                        else:
-                            st.error("AI 응답을 받아오지 못했습니다. 잠시 후 다시 시도해주세요.")
-                            
-                    except Exception as e:
-                        st.error(f"❌ API 호출 중 오류가 발생했습니다. 키가 정확한지 확인해주세요.\n\n[상세 오류 메시지]: {e}")
+                            if response and response.text:
+                                r = Document()
+                                r.add_heading(f"AI 정밀 분석 요약 ({model_display_name})", 0)
+                                
+                                for line in response.text.split('\n'):
+                                    if re.match(r'^\d+\.', line.strip()):
+                                        p = r.add_paragraph()
+                                        p.add_run(line).bold = True
+                                    else:
+                                        r.add_paragraph(line)
+                                
+                                bio_llm = io.BytesIO()
+                                r.save(bio_llm)
+                                bio_llm.seek(0)
+                                
+                                st.success("✅ AI 정밀 요약이 성공적으로 완료되었습니다!")
+                                
+                                st.download_button(
+                                    label="📥 AI 요약본(Output 3) 최종 다운로드 (.docx)",
+                                    data=bio_llm,
+                                    file_name="Output3_AI_Summary.docx",
+                                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                    type="primary"
+                                )
+                                
+                                with st.expander("👀 생성된 AI 요약 결과 미리보기", expanded=True):
+                                    st.markdown(response.text)
+                            else:
+                                st.error("AI 응답을 받아오지 못했습니다. 잠시 후 다시 시도해주세요.")
+                                
+                        except Exception as e:
+                            error_msg = str(e)
+                            if "429" in error_msg or "Quota" in error_msg or "exhausted" in error_msg.lower():
+                                st.error("❌ **[API 용량 초과 안내]** 선택하신 요금제의 데이터 처리 한도를 초과했습니다. 기고문 내용이 너무 많습니다. 약 1분 후 다시 시도하시거나, 왼쪽의 **[📘 구글 NotebookLM 사용하기]** 탭을 이용해 주세요.")
+                            else:
+                                st.error(f"❌ API 호출 중 오류가 발생했습니다. 키가 정확한지 확인해주세요.\n\n[상세 오류 메시지]: {e}")
 
 # --- 페이지 2: 3GPP FTP 탐색기 ---
 elif page == "📁 3GPP FTP 탐색기":
@@ -627,12 +674,10 @@ elif page == "ℹ️ 소개 및 가이드":
     3. **'🚀 기본 분석 실행 (Run)'** 버튼을 누르면, 프로그램이 자동으로 각 문서의 Conclusion(결론) 부분만 쏙쏙 뽑아냅니다.
     """)
     
-    st.markdown("### 3단계: AI 정밀 분석으로 요약본 만들기 (API 연동)")
+    st.markdown("### 3단계: AI 정밀 분석으로 요약본 만들기 (NotebookLM 권장)")
     st.write("""
-    이 기능은 구글의 초거대 AI를 빌려 쓰기 때문에 **'API Key'**라는 개인 열쇠가 필요합니다.
-    * 👉 **[무료 API 키 발급받기 클릭] (https://aistudio.google.com/app/apikey)**
-    * 위 링크로 이동 후 구글 로그인 ➔ 오른쪽 상단 'API 키 만들기(Create API Key)' 버튼 클릭 ➔ 키 이름을 변경 (예: '3GPP_Analyzer') ➔ 가장 오른쪽 네모 문서 모양 아이콘을 클릭하여 `AIzaSy...` 로 시작하는 긴 문자를 복사합니다.
-    * 복사한 키를 분석기 화면 3단계 입력창에 붙여넣고 **'✨ AI 정밀 요약 생성 시작'** 버튼을 누릅니다.
+    * **방법 A (권장):** 3단계 화면에서 `NotebookLM 전용 텍스트 파일(.txt)`을 다운로드한 후, 구글 NotebookLM 사이트에 업로드하여 사용하세요. 속도 제한 없이 가장 안전하게 분석할 수 있습니다.
+    * **방법 B (내장 API):** 구글 AI Studio에서 API 키를 발급받아 화면에 입력합니다. 본인의 API 티어(무료/유료)에 맞게 옵션을 선택하면 AI가 알아서 알맞은 데이터양을 조절하여 요약해 줍니다.
     """)
     
     st.markdown("---")
