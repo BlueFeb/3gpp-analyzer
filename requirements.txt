@@ -1,6 +1,7 @@
 streamlit
 openpyxl
 requests
+google-generativeai
 python-docx
 scikit-learn
 numpy
