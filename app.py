@@ -536,7 +536,7 @@ if page == "🚀 통합 AI 분석기":
         st.header("3️⃣ 단계: AI 정밀 분석 및 요약")
         st.write("추출된 결론을 바탕으로 여러 회사의 유사 제안을 문맥 단위로 묶어 완벽한 요약본을 생성합니다.")
         
-        # 탭(Tabs) 대신 렌더링에 압도적으로 안정적인 라디오(Radio) 토글 UI 사용
+        # 탭(Tabs) 대신 렌더링에 압도적으로 안정적인 라디오(Radio) 토글 UI 사용 (화면 겹침 및 초기화 버그 완벽 방어)
         ai_method_choice = st.radio(
             "💡 요약 방식을 선택하세요:",
             ("📘 구글 NotebookLM 활용하기 (강력 추천🌟)", "⚡ 내장 Gemini API로 요약하기"),
@@ -622,7 +622,7 @@ if page == "🚀 통합 AI 분석기":
             
             api_tier_choice = st.radio(
                 "API 요금제(Tier) 선택:",
-                ("🟢 무료 티어 (데이터 유실 방지 Map-Reduce 적용 + 스마트 속도 조절)", 
+                ("🟢 무료 티어 (데이터 유실 방지 Map-Reduce 적용 + 초고속 Burst 처리)", 
                  "🔵 유료 티어 (문서 전체 원문 일괄 초정밀 분석)"),
                 help="무료 API 사용자는 에러 없는 안정적인 분석을 위해 첫 번째를 선택해 주세요."
             )
@@ -664,7 +664,7 @@ if page == "🚀 통합 AI 분석기":
                         # 분할 및 단계별 병합 (Map-Reduce) 로직 실행 (무료 티어 전용)
                         # ==========================================
                         if is_free_tier:
-                            batch_size = 20
+                            batch_size = 15 # 15개 단위 묶음으로 처리 속도 및 토큰 효율 극대화
                             total_docs = len(st.session_state.extracted_data)
                             total_batches = (total_docs + batch_size - 1) // batch_size
                             
@@ -675,7 +675,7 @@ if page == "🚀 통합 AI 분석기":
                             intermediate_summaries = []
                             
                             for i in range(total_batches):
-                                status_text.text(f"🚀 데이터 요약 중... ({i+1}/{total_batches} 번째 그룹)")
+                                status_text.text(f"🚀 데이터 요약 중... ({i+1}/{total_batches} 번째 그룹 처리 중)")
                                 batch_data = st.session_state.extracted_data[i*batch_size : (i+1)*batch_size]
                                 
                                 batch_text_buffer = []
@@ -683,7 +683,7 @@ if page == "🚀 통합 AI 분석기":
                                     batch_text_buffer.append(f"[문서: {item['doc']}, 회사: {item['company']}]\n{item['content']}")
                                 batch_text = "\n\n".join(batch_text_buffer)
                                 
-                                # Map 프롬프트: 1차 추출에서는 누락 방지를 위해 '모든' 제안을 무조건 담도록 지시
+                                # 속도 극대화를 위해 불필요한 서술 방지 및 최대한 간결한 추출 지시
                                 prompt_map = f"""
                                 당신은 3GPP 표준화 회의의 전문 기술 분석가입니다.
                                 제공된 원문 데이터는 여러 기고문의 결론(Conclusion) 부분입니다.
@@ -693,6 +693,7 @@ if page == "🚀 통합 AI 분석기":
                                 1. 각 회사들이 주장하는 모든 제안(Proposal)과 결론을 추출하세요. (1개 회사가 단독으로 주장한 것도 이 단계에서는 모두 포함합니다.)
                                 2. 의미가 완전히 동일한 제안이 같은 배치 내에 있다면 하나로 묶고 회사명과 문서번호를 병기하세요.
                                 3. 절대 외부 지식을 지어내지 마세요. 환각(Hallucination)을 엄격히 금지합니다.
+                                4. 최대한 간결하고 짧게 핵심만 1~2문장으로 요약하세요. (처리 속도를 높이기 위함입니다.)
 
                                 [출력 양식]
                                 - 제안 요약: [제안 내용]
@@ -713,23 +714,18 @@ if page == "🚀 통합 AI 분석기":
                                     except Exception as e:
                                         if "429" in str(e) or "Quota" in str(e) or "exhausted" in str(e).lower() or "503" in str(e):
                                             if attempt < max_retries - 1:
-                                                wait_time = 60
-                                                # 활성 카운트다운(Active Wait) 방어 로직: UI 튕김 완벽 방지
+                                                wait_time = 15 * (attempt + 1) # 15초, 30초 대기 (빠른 백오프)
+                                                # 활성 카운트다운(Active Wait) 방어 로직: UI 튕김(Ghosting/Timeout) 완벽 방지
                                                 for countdown in range(wait_time, 0, -1):
-                                                    status_text.text(f"⚠️ 구글 1분 처리 한도 도달! 완전히 리셋하기 위해 대기합니다... (시도 {attempt+1}/{max_retries}) - {countdown}초 남음")
+                                                    status_text.text(f"⚠️ 일시적 속도 제한. {countdown}초 후 번개같이 재시도합니다... (시도 {attempt+1}/{max_retries})")
                                                     time.sleep(1)
                                             else:
-                                                raise Exception("무료 API 일일 한도가 소진되었거나 텍스트가 너무 많습니다. NotebookLM을 권장합니다.")
+                                                raise Exception("무료 API 한도가 소진되었습니다. NotebookLM을 권장합니다.")
                                         else:
                                             raise e
                                 
                                 progress_bar.progress((i+1)/total_batches)
-                                
-                                if i < total_batches - 1:
-                                    # 활성 카운트다운 방어 로직
-                                    for countdown in range(5, 0, -1):
-                                        status_text.text(f"⏳ 속도 위반 방지를 위해 대기 중... ({i+1}/{total_batches} 완료) - {countdown}초 남음")
-                                        time.sleep(1)
+                                # 인위적인 5초 슬립 제거: 구글 한도 내에서 최고 속도로 Burst 통과 유도
                                     
                             status_text.text("🧠 모든 그룹 분석 완료! 최종 전문가 보고서로 병합하는 중입니다...")
                             final_input = "\n\n=== 그룹별 1차 요약본 모음 ===\n\n".join(intermediate_summaries)
@@ -755,7 +751,7 @@ if page == "🚀 통합 AI 분석기":
                             {final_input}
                             """
                             
-                            # Reduce 단계 재시도 및 튕김 방지 로직 강화
+                            # Reduce 단계 재시도 및 UI 튕김 방지 로직 강화
                             max_retries_reduce = 3
                             for attempt in range(max_retries_reduce):
                                 try:
@@ -764,9 +760,9 @@ if page == "🚀 통합 AI 분석기":
                                 except Exception as e:
                                     if "429" in str(e) or "Quota" in str(e) or "exhausted" in str(e).lower() or "503" in str(e):
                                         if attempt < max_retries_reduce - 1:
-                                            wait_time = 60
+                                            wait_time = 15 * (attempt + 1)
                                             for countdown in range(wait_time, 0, -1):
-                                                status_text.text(f"⚠️ 구글 서버 과부하! 안전한 최종 병합을 위해 대기합니다... (시도 {attempt+1}/{max_retries_reduce}) - {countdown}초 남음")
+                                                status_text.text(f"⚠️ 서버 응답 지연. 최종 병합을 위해 대기합니다... (시도 {attempt+1}/{max_retries_reduce}) - {countdown}초 남음")
                                                 time.sleep(1)
                                         else:
                                             raise Exception("API 한도가 완전히 소진되었습니다. 잠시 후 시도하거나 NotebookLM을 이용해 주세요.")
@@ -817,7 +813,7 @@ if page == "🚀 통합 AI 분석기":
                                 except Exception as e:
                                     if "429" in str(e) or "Quota" in str(e) or "503" in str(e):
                                         if attempt < max_retries_paid - 1:
-                                            wait_time = 30
+                                            wait_time = 15 * (attempt + 1)
                                             for countdown in range(wait_time, 0, -1):
                                                 status_text.text(f"⚠️ 서버 응답 지연. 재시도 대기 중... ({attempt+1}/{max_retries_paid}) - {countdown}초 남음")
                                                 time.sleep(1)
@@ -900,7 +896,7 @@ elif page == "📁 3GPP FTP 탐색기":
     - **앞자리 (R1, S2, C1 등):** 워킹그룹(Working Group)을 의미합니다.
     - **중간 (25):** 2025년에 제출되었음을 의미합니다.
     - **뒷자리 (05131):** 해당 연도의 기고문 일련번호입니다.
-    이를 통해 기고문이 어느 그룹에서 언제 제출되었는지 쉽게 파악할 수 있습니다.
+    이를 통해 기고문이 어느 그룹에서 언제 제출되었는지 쉽게 파악할 수 파악할 수 있습니다.
     """)
 
 # --- 페이지 3: 소개 및 가이드 ---
